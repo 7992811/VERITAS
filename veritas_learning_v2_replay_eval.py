@@ -229,8 +229,12 @@ def evaluate_trade(candidate,row,cached_bars):
     if kind=="STOP_GEOMETRY":
         candidate_buffer=_num(proposal.get("stop_buffer_atr"))
         baseline_buffer=_num(proposal.get("baseline_stop_buffer_atr")) or .15
-        if any(x is None for x in (stop_anchor,atr,target,candidate_buffer,baseline_buffer)):
+        event_policy=_object(event.get("policy"))
+        recorded_buffer=_num(event_policy.get("stop_buffer_atr"))
+        if any(x is None for x in (stop_anchor,atr,target,candidate_buffer,baseline_buffer,recorded_buffer)):
             return {"status":"INVALID","reason":"STOP_REPLAY_FIELDS_MISSING"}
+        if not math.isclose(recorded_buffer,baseline_buffer,rel_tol=1e-12,abs_tol=1e-12):
+            return {"status":"INVALID","reason":"BASELINE_STOP_POLICY_MISMATCH"}
         baseline_stop=REPLAY.structural_stop(stop_anchor,atr,direction,baseline_buffer)
         candidate_stop=REPLAY.structural_stop(stop_anchor,atr,direction,candidate_buffer)
         baseline=REPLAY.replay_stop_target(
@@ -249,8 +253,12 @@ def evaluate_trade(candidate,row,cached_bars):
         runner=_num(event.get("runner_target_price"))
         candidate_fraction=_num(proposal.get("first_target_fraction"))
         baseline_fraction=_num(proposal.get("baseline_first_target_fraction")) or .50
-        if any(x is None for x in (base_stop,first_target,runner,candidate_fraction,baseline_fraction)):
+        event_policy=_object(event.get("policy"))
+        recorded_fraction=_num(event_policy.get("target_one_fraction"))
+        if any(x is None for x in (base_stop,first_target,runner,candidate_fraction,baseline_fraction,recorded_fraction)):
             return {"status":"INVALID","reason":"EXIT_REPLAY_FIELDS_MISSING"}
+        if not math.isclose(recorded_fraction,baseline_fraction,rel_tol=1e-12,abs_tol=1e-12):
+            return {"status":"INVALID","reason":"BASELINE_EXIT_POLICY_MISMATCH"}
         baseline=REPLAY.replay_partial_runner(
             bars,entry_at=opened,entry_price=entry,direction=direction,
             stop_price=base_stop,first_target=first_target,runner_target=runner,
