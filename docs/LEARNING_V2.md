@@ -176,3 +176,27 @@ state inside the same signal bar.
 
 The signature change affects only durable event persistence. It does not alter
 the signal, order, risk, execution or broker decision itself.
+
+
+## Outcome evidence tier (v91.8.32)
+
+Closed-trade evidence is split into two independent authority levels.
+
+**Outcome evidence** requires the original event/source, immutable first fill,
+initial stop and ATR, complete cash accounting, and a valid closed-trade clock.
+It may train only net-outcome, position-size and probability/calibration logic.
+
+**Path evidence** additionally requires the continuous observation-path witness.
+Only this tier may support MFE/MAE, capture, stop-quality, exit-quality or
+strategy-quality conclusions.
+
+A trade with an observation gap is therefore VERIFIED_OUTCOME_ONLY rather
+than wholly discarded. Its learning_eligible flag remains false, its
+strategy_quality_eligible flag remains false, and it cannot enter path-based
+profiles. A separate outcome_learning_eligible stamp plus frozen evidence hash
+allows the closed-trade microlearner to consume the proven net cash outcome.
+
+Materialization is backward-compatible: existing episodes missing the outcome
+evidence version/hash are reprocessed from their stored immutable evidence.
+No historical price path is reconstructed and no missing prospective admission
+stamp is invented.

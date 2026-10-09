@@ -86,17 +86,21 @@ def observation(trade, *, now=None):
         policy_hash=stamp['policy_hash'],source_identity=frozen_source,
         source_verified=source_ok,independence_verified=True,
         evidence_hash=evidence_hash,evidence_version=LI.VERSION,
-        proof_kind='SIMULATED_SIZE_ON_OBSERVED_PATH',
+        proof_kind='SIMULATED_SIZE_ON_VERIFIED_NET_OUTCOME',
         known_at=known.isoformat() if known else None,decision_at=decision.isoformat() if decision else None,
         outcome_at=closed.isoformat() if closed else None,observed_at=clock.isoformat() if clock else None,
         predicted_probability=_number(stamp.get('base_probability')),
         net_reward_risk=_number(stamp.get('net_reward_risk')),
         knowledge_trials=stamp.get('knowledge_trials') or [])
-    problem=LI.trade_exclusion(t)
-    verified=bool(t.get('episode_eligible') is True and integrity.get('version')==LI.VERSION
+    problem=LI.outcome_trade_exclusion(t)
+    outcome_verified=bool(t.get('episode_outcome_eligible') is True
+                  and t.get('episode_outcome_evidence_hash')
+                  and t.get('episode_outcome_evidence_hash')==t.get('learning_evidence_hash'))
+    path_verified=bool(t.get('episode_eligible') is True and integrity.get('version')==LI.VERSION
                   and integrity.get('status')=='VERIFIED'
                   and integrity.get('evidence_hash')==t.get('learning_evidence_hash')
                   and integrity.get('event_id')==event['event_id'])
+    verified=outcome_verified or path_verified
     if problem or not verified or not source_ok:
         # This is an explicit revocation record, not positive training evidence.
         return dict(common,evidence_valid=False),problem or 'UNVERIFIED_CURRENT_EPISODE'
@@ -279,11 +283,16 @@ class TradeLearning:
                 with self._transaction(context) as c:
                     selected='''SELECT t.trade_id FROM paper_trades t
                         LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id
-                        WHERE e.trade_id IS NULL AND t.closed_at IS NOT NULL
+                        WHERE (e.trade_id IS NULL
+                               OR e.payload->>'outcome_diagnostics_version' IS DISTINCT FROM %s
+                               OR NULLIF(e.payload->>'outcome_evidence_hash','') IS NULL)
+                          AND t.closed_at IS NOT NULL
                           AND t.status IN ('CLOSED','CLOSE','EXITED') AND t.opened_at>=%s::timestamptz
                         ORDER BY t.closed_at,t.trade_id LIMIT %s FOR UPDATE OF t SKIP LOCKED'''
-                    rows=c.execute(self._rows_sql(selected,'FROM selected JOIN paper_trades t ON t.trade_id=selected.trade_id'),
-                        (EPOCH,BATCH_SIZE)).fetchall()
+                    rows=c.execute(self._rows_sql(
+                        selected,'FROM selected JOIN paper_trades t ON t.trade_id=selected.trade_id',
+                        evidence_hash=True),
+                        (LI.DIAGNOSTICS.VERSION,EPOCH,BATCH_SIZE)).fetchall()
                     upsert=getattr(self.ns['VP'],'_v90r29_upsert_episode')
                     for row in rows:
                         self._check(context)
@@ -306,6 +315,8 @@ class TradeLearning:
                     rows=c.execute(self._rows_sql(selected,
                         'FROM selected JOIN paper_trades t ON t.trade_id=selected.trade_id LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id',
                         extra_columns=(('e.learning_eligible','episode_eligible'),
+                            ("(e.payload->>'outcome_learning_eligible')::boolean",'episode_outcome_eligible'),
+                            ("e.payload->>'outcome_evidence_hash'",'episode_outcome_evidence_hash'),
                             ("e.payload->'learning_integrity'",'learning_integrity'),
                             ("e.payload->>'learning_exclusion_reason'",'learning_exclusion_reason')),evidence_hash=True),
                         (EPOCH,*after,BATCH_SIZE)).fetchall()

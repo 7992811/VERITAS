@@ -73,6 +73,8 @@ class TradeDiagnosticsTests(unittest.TestCase):
                         result = DIAG.diagnose(trade)
                         self.assertEqual(result["status"], "VERIFIED_RULE_OUTCOME", result)
                         self.assertEqual(result["primary_attribution"], "VALID_STRUCTURAL_STOP_LOSS")
+                        self.assertTrue(result["outcome_evidence_eligible"])
+                        self.assertTrue(result["path_evidence_eligible"])
                         self.assertTrue(result["strategy_quality_eligible"])
                         self.assertFalse(result["directional_error"])
                         self.assertAlmostEqual(result["normalization"]["mfe_r"], .02)
@@ -135,14 +137,11 @@ class TradeDiagnosticsTests(unittest.TestCase):
                         if v["code"] == "INITIAL_STOP_OUTSIDE_RECORDED_RULE")
         self.assertEqual(required, trade["payload"]["entry_event_snapshot"]["stop_price"])
 
-    def test_missing_or_unverified_proof_never_becomes_normal_loss(self):
+    def test_missing_or_unverified_non_path_proof_never_becomes_normal_loss(self):
         changes = (
             lambda p:p.pop("entry_event_snapshot"),
             lambda p:p["entry_event_snapshot"].pop("confirmed_at"),
             lambda p:p["entry_event_snapshot"]["policy"].pop("stop_buffer_atr"),
-            lambda p:p.pop("observation_path"),
-            lambda p:p["observation_path"].update(started_at_entry=False),
-            lambda p:p["observation_path"].update(gap_count=1, max_gap_seconds=100),
             lambda p:p.update(recovered=True),
             lambda p:p.update(data_integrity_status="UNKNOWN"),
             lambda p:p["last_exit_source_identity"].update(contract_id="FOREIGN_CONTRACT"),
@@ -153,8 +152,27 @@ class TradeDiagnosticsTests(unittest.TestCase):
                 change(trade["payload"])
                 result = DIAG.diagnose(trade)
                 self.assertEqual(result["status"], "UNVERIFIED", result)
+                self.assertFalse(result["outcome_evidence_eligible"])
                 self.assertFalse(result["learning_eligible"])
                 self.assertEqual(result["hypotheses"], [])
+
+    def test_path_gap_preserves_verified_net_outcome_but_blocks_path_learning(self):
+        changes = (
+            lambda p:p.pop("observation_path"),
+            lambda p:p["observation_path"].update(started_at_entry=False),
+            lambda p:p["observation_path"].update(gap_count=1, max_gap_seconds=100),
+        )
+        for index, change in enumerate(changes):
+            with self.subTest(index=index):
+                trade=closed_trade(favorable_r=1.2)
+                change(trade["payload"])
+                result=DIAG.diagnose(trade)
+                self.assertEqual(result["status"],"VERIFIED_OUTCOME_ONLY",result)
+                self.assertTrue(result["outcome_evidence_eligible"])
+                self.assertFalse(result["path_evidence_eligible"])
+                self.assertFalse(result["learning_eligible"])
+                self.assertFalse(result["strategy_quality_eligible"])
+                self.assertEqual(result["hypotheses"],[])
 
     def test_missing_original_risk_is_not_recovered_from_later_stop_or_nav_budget(self):
         trade = closed_trade()
@@ -315,6 +333,8 @@ class PortfolioDiagnosticsIntegrationTests(unittest.TestCase):
         before = deepcopy(trade)
         result = PORTFOLIO._v90r29_episode_from_trade(trade)
         self.assertTrue(result["learning_eligible"])
+        self.assertTrue(result["payload"]["outcome_learning_eligible"])
+        self.assertTrue(result["payload"]["path_learning_eligible"])
         self.assertEqual(result["primary_attribution"], "VALID_STRUCTURAL_STOP_LOSS")
         self.assertEqual(result["net_pnl_rub"], -105.)
         self.assertEqual(result["payload"]["diagnostics_version"], DIAG.VERSION)
@@ -329,6 +349,17 @@ class PortfolioDiagnosticsIntegrationTests(unittest.TestCase):
         self.assertEqual(profile["valid_structural_stop_loss_rate"], 1.)
         self.assertEqual(profile["entry_size_multiplier"], 1.)
         self.assertEqual(trade, before)
+
+    def test_episode_keeps_outcome_eligible_when_path_is_incomplete(self):
+        import veritas_portfolio as PORTFOLIO
+        trade=closed_trade()
+        trade["payload"]["observation_path"].update(gap_count=1,max_gap_seconds=100.)
+        result=PORTFOLIO._v90r29_episode_from_trade(trade)
+        self.assertFalse(result["learning_eligible"])
+        self.assertTrue(result["payload"]["outcome_learning_eligible"])
+        self.assertFalse(result["payload"]["path_learning_eligible"])
+        self.assertEqual(result["payload"]["trade_diagnostics"]["status"],"VERIFIED_OUTCOME_ONLY")
+        self.assertEqual(result["learning_action"],"COUNT_NET_OUTCOME_ONLY")
 
     def test_closed_trade_view_replaces_old_outcome_based_labels_using_original_proof(self):
         import veritas_portfolio as PORTFOLIO
@@ -347,8 +378,11 @@ class PortfolioDiagnosticsIntegrationTests(unittest.TestCase):
         self.assertEqual(rows[0]["learning_label"], "VALID_STRUCTURAL_STOP_LOSS")
         self.assertNotIn("OLD_STOP_VERDICT", rows[0]["learning_conclusion"])
         self.assertTrue(rows[0]["learning_eligible"])
-        self.assertEqual(rows[1]["learning_label"], "UNVERIFIED_TRADE_EVIDENCE")
+        self.assertEqual(rows[1]["learning_label"], "VALID_STRUCTURAL_STOP_LOSS")
         self.assertFalse(rows[1]["learning_eligible"])
+        self.assertTrue(rows[1]["trade_diagnostics"]["outcome_evidence_eligible"])
+        self.assertFalse(rows[1]["trade_diagnostics"]["path_evidence_eligible"])
+        self.assertEqual(rows[1]["trade_diagnostics"]["status"], "VERIFIED_OUTCOME_ONLY")
         self.assertEqual(rows[0]["net_pnl_rub"], valid["net_pnl_rub"])
         self.assertEqual(valid["payload"]["learning_label"], "RIGHT_DIRECTION_STOP_ERROR")
 

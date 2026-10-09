@@ -259,7 +259,10 @@ def _candidate_values(candidate, row):
         adjusted = min(1., max(0., p+candidate["proposal"]["probability_delta"]))
         baseline, result = (p-y)**2, (adjusted-y)**2
         return (baseline, result, baseline-result, bool(y)), None
-    if row.get("proof_kind") not in ("SIMULATED_SIZE_ON_OBSERVED_PATH", "PAIRED_OBSERVED_PAPER_PATH"):
+    if row.get("proof_kind") not in (
+            "SIMULATED_SIZE_ON_OBSERVED_PATH",
+            "PAIRED_OBSERVED_PAPER_PATH",
+            "SIMULATED_SIZE_ON_VERIFIED_NET_OUTCOME"):
         return None, "WAIT_VERIFIED_PROFITABILITY"
     stamp = _time(row.get("candidate_decision_at"))
     if (row.get("candidate_id") != candidate["candidate_id"] or stamp is None
@@ -285,7 +288,8 @@ def _candidate_values(candidate, row):
         factor = expected["effective_multiplier"]
     if not (0 < base_risk <= cap and 0 < risk <= cap and math.isclose(risk/base_risk, factor, rel_tol=1e-6)):
         return None, "PAIRED_RISK_OR_CONDITION_MISMATCH"
-    if row["proof_kind"] == "SIMULATED_SIZE_ON_OBSERVED_PATH" and not math.isclose(result, base*factor, rel_tol=1e-7, abs_tol=1e-9):
+    if row["proof_kind"] in ("SIMULATED_SIZE_ON_OBSERVED_PATH",
+                              "SIMULATED_SIZE_ON_VERIFIED_NET_OUTCOME") and not math.isclose(result, base*factor, rel_tol=1e-7, abs_tol=1e-9):
         return None, "SIMULATED_CASHFLOW_MISMATCH"
     return (base, result, result-base, result > 0), None
 
@@ -438,7 +442,9 @@ def _consume(state, row, clock):
         scope["evidence_hash"] = _digest([scope["evidence_hash"], row["evidence_hash"]])
     rr = row.get("net_reward_risk")
     baseline_risk, risk_cap = _number(row.get("baseline_risk_r")), _number(row.get("risk_cap_r"))
-    cashflow_verified = bool(row.get("proof_kind") in ("SIMULATED_SIZE_ON_OBSERVED_PATH", "PAIRED_OBSERVED_PAPER_PATH")
+    cashflow_verified = bool(row.get("proof_kind") in ("SIMULATED_SIZE_ON_OBSERVED_PATH",
+                                                        "PAIRED_OBSERVED_PAPER_PATH",
+                                                        "SIMULATED_SIZE_ON_VERIFIED_NET_OUTCOME")
                              and row.get("costs_verified") is True and row.get("risk_verified") is True
                              and _number(row.get("baseline_net_r")) is not None
                              and baseline_risk is not None and risk_cap is not None

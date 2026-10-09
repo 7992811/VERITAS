@@ -7497,6 +7497,10 @@ def _v90r29_episode_from_trade(t):
         diagnosis.get('learning_eligible')
         and str(t.get('opened_at') or '')>=str(V90_Q2_STARTED_AT)
     )
+    outcome_learning_eligible=bool(
+        diagnosis.get('outcome_evidence_eligible')
+        and str(t.get('opened_at') or '')>=str(V90_Q2_STARTED_AT)
+    )
     issues=list(diagnosis['attributions'])
     primary=diagnosis['primary_attribution']
     action=diagnosis['learning_action']
@@ -7536,6 +7540,10 @@ def _v90r29_episode_from_trade(t):
         'independent_episode_key':_v90r60_independent_episode_key(t,p),
         'independent_episode_policy':'R60_CANONICAL_SETUP_TIME_BUCKET',
         'learning_exclusion_reason':exclusion,
+        'path_learning_eligible':learning_eligible,
+        'outcome_learning_eligible':outcome_learning_eligible,
+        'outcome_evidence_hash':t.get('learning_evidence_hash'),
+        'outcome_diagnostics_version':VTD.VERSION,
       }
     }
 
@@ -7589,7 +7597,8 @@ def _v90r29_upsert_episode(c,t):
         cost_to_expected_edge=EXCLUDED.cost_to_expected_edge,
         primary_attribution=EXCLUDED.primary_attribution,
         attributions=EXCLUDED.attributions,learning_action=EXCLUDED.learning_action,
-        learning_eligible=EXCLUDED.learning_eligible,payload=EXCLUDED.payload
+        learning_eligible=EXCLUDED.learning_eligible,
+        payload=COALESCE(v90_learning_episodes.payload,'{}'::jsonb)||EXCLUDED.payload
     """,(
       e['trade_id'],e['closed_at'],e['portfolio_name'],e['asset'],e['direction'],e['horizon'],
       e['setup_family'],e['regime'],e['signal_tier'],e['setup_grade'],e['expected_move_pct'],
