@@ -90,20 +90,17 @@ class ReplayEvaluatorTests(unittest.TestCase):
     def test_partial_entry_bar_touching_barrier_is_ambiguous(self):
         def path(asset,timeframe,identity,now=None,limit=500):
             if timeframe!="5m": return []
-            return [
-                {"opened_at":(T-timedelta(minutes=2)).isoformat(),
-                 "closed_at":(T+timedelta(minutes=3)).isoformat(),
-                 "open":100.0,"high":103.0,"low":97.0,"close":100.5,
-                 "source_key":"TEST:PX","contract_id":"C1"},
-                {"opened_at":(T+timedelta(minutes=3)).isoformat(),
-                 "closed_at":(T+timedelta(minutes=8)).isoformat(),
-                 "open":100.5,"high":101.0,"low":99.5,"close":100.7,
-                 "source_key":"TEST:PX","contract_id":"C1"},
-                {"opened_at":(T+timedelta(minutes=8)).isoformat(),
-                 "closed_at":(T+timedelta(minutes=13)).isoformat(),
-                 "open":100.7,"high":101.1,"low":99.8,"close":100.8,
-                 "source_key":"TEST:PX","contract_id":"C1"},
-            ]
+            rows=[{"opened_at":(T-timedelta(minutes=2)).isoformat(),
+                   "closed_at":(T+timedelta(minutes=3)).isoformat(),
+                   "open":100.0,"high":103.0,"low":97.0,"close":100.5,
+                   "source_key":"TEST:PX","contract_id":"C1"}]
+            for i in range(11):
+                opened=T+timedelta(minutes=3+5*i)
+                rows.append({"opened_at":opened.isoformat(),
+                             "closed_at":(opened+timedelta(minutes=5)).isoformat(),
+                             "open":100.5,"high":101.0,"low":99.5,"close":100.7,
+                             "source_key":"TEST:PX","contract_id":"C1"})
+            return rows
         result=E.evaluate_trade(self.stop_candidate(),row(),path)
         self.assertEqual(result["status"],"AMBIGUOUS")
         self.assertEqual(result["reason"],"ENTRY_BAR_BARRIER_ORDER_UNKNOWN")
