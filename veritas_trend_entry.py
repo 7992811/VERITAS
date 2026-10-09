@@ -304,16 +304,23 @@ def _signal_continuation_event(row,price=None,now=None):
     # Do not let a feed/session execution veto erase a current continuation.
     # The order path independently re-checks source, quote time and session.
     plan=dict(row.get('trade_plan') or {})
-    integrity=plan.get('trade_integrity') or {}
-    if integrity.get('hard_invalidation') or integrity.get('fast_tf_conflict'):
-        return None
-    # Once the decision layer publishes LONG/SHORT, stale/legacy arbitration
-    # metadata cannot contradict that same published decision. Current hard
-    # trade-integrity conflicts above remain authoritative.
     ctx=dict(context_of(row) or {})
     current=dict(ctx.get('event') or {})
     if current.get('catalyst_continuation'):
         return None
+    integrity=plan.get('trade_integrity') or {}
+    parent_reason=str(current.get('spent_reason') or plan.get('reason') or '')
+    parent_consumed=bool(current.get('spent') or parent_reason in (
+        'SAME_TF_TARGET_ALREADY_REACHED','R74_EVENT_TARGET_REACHED'))
+    # A hard invalidation tied to the consumed parent setup must not veto a new
+    # continuation identity. Unspent/current invalidation and fast-TF conflict
+    # remain hard. Direction alignment is re-checked below on the current row.
+    if integrity.get('fast_tf_conflict'):
+        return None
+    if integrity.get('hard_invalidation') and not parent_consumed:
+        return None
+    # Once the decision layer publishes LONG/SHORT, stale parent arbitration
+    # metadata cannot contradict that same current published decision.
 
     hs=row.get('horizon_structure') or {}
     hdir=str(hs.get('direction') or row.get('horizon_structure_direction') or '')
