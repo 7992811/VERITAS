@@ -213,15 +213,28 @@ The incremental fraction is floored to the portfolio's configured step.
         return denied("NET_STOP_RISK_POLICY_REQUIRED")
     cap = min(canonical_cap, supplied_cap)
     available = max(0.0, cap - used_risk)
-    incremental = min(max(0.0, requested - current), available / risk,
-                      max(0.0, maximum - current), max(0.0, gross - other_gross - current))
-    incremental = max(0.0, math.floor(incremental / step + 1e-12) * step)
+    requested_headroom=max(0.0, requested-current)
+    risk_headroom=max(0.0, available/risk)
+    position_headroom=max(0.0, maximum-current)
+    gross_headroom=max(0.0, gross-other_gross-current)
+    raw_incremental=min(requested_headroom,risk_headroom,position_headroom,gross_headroom)
+    incremental=max(0.0, math.floor(raw_incremental / step + 1e-12) * step)
     if used_risk + incremental * risk > cap + 1e-12:
         incremental = max(0.0, incremental - step)
     fraction = current + incremental
     allowed = incremental > 0
-    reason = ("NET_STOP_RISK_BUDGET_PASS" if allowed else
-              "TARGET_ALREADY_REACHED" if requested <= current else "STOP_RISK_CAP_EXCEEDED")
+    if allowed:
+        reason="NET_STOP_RISK_BUDGET_PASS"
+    elif requested <= current:
+        reason="TARGET_ALREADY_REACHED"
+    elif risk_headroom + 1e-12 < step:
+        reason="STOP_RISK_CAP_EXCEEDED"
+    elif position_headroom + 1e-12 < step:
+        reason="POSITION_FRACTION_CAP_EXCEEDED"
+    elif gross_headroom + 1e-12 < step:
+        reason="PORTFOLIO_GROSS_CAP_EXCEEDED"
+    else:
+        reason="ADD_BELOW_POSITION_STEP"
     return dict(version=VERSION, eligible=allowed,
                 status="PASS" if allowed else "HOLD" if current > 0 else "BLOCK",
                 action="ADD" if allowed and current > 0 else "OPEN" if allowed else
@@ -231,6 +244,14 @@ The incremental fraction is floored to the portfolio's configured step.
                 requested_fraction=requested, current_fraction=current,
                 risk_cap_nav=cap, existing_stop_risk_nav=used_risk,
                 available_add_risk_nav=available, marginal_net_risk_pct=risk,
+                requested_headroom_fraction=requested_headroom,
+                stop_risk_headroom_fraction=risk_headroom,
+                position_headroom_fraction=position_headroom,
+                gross_headroom_fraction=gross_headroom,
+                binding_constraint=min(
+                    (("REQUESTED",requested_headroom),("STOP_RISK",risk_headroom),
+                     ("POSITION",position_headroom),("GROSS",gross_headroom)),
+                    key=lambda item:item[1])[0],
                 incremental_stop_risk_nav=incremental * risk,
                 total_stop_risk_nav_after=used_risk + incremental * risk,
                 net_reward_risk=actual_rr, modeled_entry_fill=entry,
