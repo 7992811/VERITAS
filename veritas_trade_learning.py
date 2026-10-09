@@ -48,6 +48,45 @@ def _hash(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),default=str,allow_nan=False).encode()).hexdigest()
 
 
+def _export_diagnostics(rows, submitted, exclusions):
+    """Bounded reason counters only; never emit trade payloads or identifiers."""
+    safe=Counter()
+    for reason,count in (exclusions or {}).items():
+        token=str(reason or "UNKNOWN").strip().upper()
+        if (not token or len(token)>96
+                or any(ch not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for ch in token)):
+            token="OTHER_EXCLUSION"
+        safe[token]+=max(0,int(count or 0))
+    rows=[dict(row) for row in (rows or [])]
+    prospective=normalized=budget=single_fill=0
+    for row in rows:
+        p=AUDIT.payload(row.get("payload"))
+        admission=p.get("entry_canonical_admission") or {}
+        stamp=admission.get("autonomous_learning") if isinstance(admission,dict) else {}
+        prospective+=int(isinstance(stamp,dict) and bool(stamp.get("policy_hash")))
+        normalized+=int(p.get("normalized_paper_notional") is True
+                        and p.get("quantity_semantics")=="NORMALIZED_PAPER_RETURN_UNITS")
+        risk=p.get("entry_stop_risk_budget") or {}
+        budget+=int(isinstance(risk,dict) and risk.get("version")=="NET_STOP_RISK_BUDGET_V1"
+                    and risk.get("eligible") is True)
+        single_fill+=int(not (p.get("last_add_event_id") or p.get("last_add_stop_risk_budget")
+                             or p.get("last_add_canonical_admission")))
+    top=[{"reason":reason,"n":count} for reason,count in
+         sorted(safe.items(),key=lambda item:(-item[1],item[0]))[:8]]
+    return {
+        "version":"CLOSED_TRADE_EXPORT_DIAGNOSTICS_V1",
+        "scanned":len(rows),"submitted":max(0,int(submitted or 0)),
+        "excluded":max(0,len(rows)-max(0,int(submitted or 0))),
+        "outcome_evidence_rows":sum(row.get("episode_outcome_eligible") is True for row in rows),
+        "path_evidence_rows":sum(row.get("episode_eligible") is True for row in rows),
+        "prospective_stamp_rows":prospective,
+        "normalized_quantity_rows":normalized,
+        "net_stop_budget_rows":budget,
+        "single_fill_rows":single_fill,
+        "top_exclusions":top,
+    }
+
+
 def observation(trade, *, now=None):
     """Freeze one size experiment in common baseline net-stop-risk units.
 
@@ -349,6 +388,7 @@ class TradeLearning:
                     # candidate snapshot already has its own durable slot.
                     result['autonomous']={k:result['autonomous'].get(k) for k in ('status','counts','candidate_counts')}
                 result.update(scanned=len(rows),submitted=len(observations),exclusions=dict(exclusions))
+                result["export_diagnostics"]=_export_diagnostics(rows,len(observations),exclusions)
                 cursor['after']=[rows[-1]['closed_at'].isoformat(),rows[-1]['trade_id']] if rows else [EPOCH,'']
                 cursor['phase']='recheck'
             elif phase=='recheck':
@@ -406,8 +446,11 @@ class TradeLearning:
                 raise RuntimeError('learning job lease expired before progress commit')
             if published_snapshot is not None:
                 result['snapshot']=dict(published_snapshot,**self.validation_status())
-            self._emit_phase(phase,'OK',next_stage=cursor['phase'],**{
-                key:result[key] for key in ('materialized','scanned','submitted','checked','revoked') if key in result})
+            phase_fields={key:result[key] for key in
+                          ('materialized','scanned','submitted','checked','revoked') if key in result}
+            if phase=="export" and isinstance(result.get("export_diagnostics"),dict):
+                phase_fields["export_diagnostics"]=result["export_diagnostics"]
+            self._emit_phase(phase,'OK',next_stage=cursor['phase'],**phase_fields)
             return result
         except MaintenanceDeferred as ex:
             # Preserve the committed cursor/last-good result when the lane's
