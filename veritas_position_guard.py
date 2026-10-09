@@ -132,6 +132,20 @@ def book_transaction(c, *, blocking=True, lane='OTHER', timing=None):
     measured=timing if timing is not None else {}
     measured.update(python_lock_wait_seconds=0.0,db_lock_wait_seconds=0.0,
                     lock_hold_seconds=0.0,status='BUSY')
+    storage_prepared=None
+    # The catalog probe and policy inspection do not touch financial rows. For
+    # blocking book lanes, perform them before taking the process-wide book lock;
+    # configure() still applies SET LOCAL inside the protected transaction.
+    if blocking and lane in ('PORTFOLIO','PROTECTIVE'):
+        preflight_started=time.monotonic()
+        try:
+            storage_prepared=BS.prepare(c)
+        except Exception:
+            # Preserve the old fail-closed behavior: configure() will repeat the
+            # probe under the protected transaction and propagate any real error.
+            storage_prepared=None
+        if storage_prepared is not None:
+            measured['storage_preflight_seconds']=time.monotonic()-preflight_started
     wait_started=time.monotonic()
     acquired=_mutex.acquire(blocking=blocking,priority=lane=='PROTECTIVE')
     measured['python_lock_wait_seconds']=time.monotonic()-wait_started
@@ -159,7 +173,7 @@ def book_transaction(c, *, blocking=True, lane='OTHER', timing=None):
                 body_finished=True
                 return
             if lane in ('PORTFOLIO', 'PROTECTIVE'):
-                storage = BS.configure(c)
+                storage = BS.configure(c,prepared=storage_prepared)
                 if storage is not None:
                     measured['payload_compression'] = storage
                     measured['storage_setup_seconds'] = storage['elapsed_seconds']
