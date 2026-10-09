@@ -24,7 +24,7 @@ MIN_TRADE_N = 12
 MIN_ROUTER_TRAIN_N = 6
 MAX_HYPOTHESES = 64
 ENTRY_FALSE_BLOCK_MOVE = 0.004
-STOP_BUFFER_ATR_CANDIDATES = (0.10, 0.15, 0.20, 0.30)
+STOP_BUFFER_ATR_CANDIDATES = (0.10, 0.20, 0.30)
 EXIT_FIRST_TARGET_FRACTIONS = (0.25, 0.75)
 STRATEGY_FAMILIES = ("TREND", "BREAKOUT", "PULLBACK", "MOMENTUM", "REVERSAL", "RANGE")
 LEARNABLE_ENTRY_BLOCKERS = frozenset({
@@ -319,47 +319,58 @@ def generate_hypotheses(decision_rows, trade_rows):
                  "causal_false_block_proven":False}
             ))
 
-    # 2) Stop: evaluate alternative ATR geometry only where actual excursion exists.
+    # 2) Stop/Exit research starts from verified net outcomes, not from the
+    # stricter continuous quote-path tier. Ordered replay is the independent
+    # evidence that may later support these counterfactual variants.
     trade_ctx=defaultdict(list)
     for r in trade_rows:
         trade_ctx[_digest(_context(r))].append(r)
     for rows in trade_ctx.values():
-        if len(rows)<MIN_TRADE_N:
+        outcome_rows=[r for r in rows if r.get("outcome_evidence_eligible") is True]
+        if len(outcome_rows)<MIN_TRADE_N:
             continue
-        scope=_context(rows[0])
-        valid=[r for r in rows if _num(r.get("mae")) is not None and _num(r.get("mfe")) is not None]
-        if len(valid)<MIN_TRADE_N:
-            continue
-        adverse=[abs(_num(r.get("mae")) or 0.0) for r in valid]
-        fav=[max(0.0,_num(r.get("mfe")) or 0.0) for r in valid]
-        med_adverse=sorted(adverse)[len(adverse)//2]
-        med_fav=sorted(fav)[len(fav)//2]
-        for buffer_atr in STOP_BUFFER_ATR_CANDIDATES:
-            out.append(_hypothesis(
-                "STOP_GEOMETRY",
-                scope,
-                {"stop_buffer_atr":buffer_atr,"baseline_stop_buffer_atr":0.15,
-                 "action":"SHADOW_REPLAY_ONLY","anchor":"SAME_TIMEFRAME_STRUCTURE"},
-                {"n":len(valid),"median_mae":med_adverse,"median_mfe":med_fav,
-                 "counterfactual_execution_proven":False}
-            ))
+        scope=_context(outcome_rows[0])
+        path_rows=[r for r in outcome_rows if r.get("path_evidence_eligible") is True
+                   and _num(r.get("mae")) is not None and _num(r.get("mfe")) is not None]
+        stop_ready=[r for r in outcome_rows if r.get("stop_replay_ready") is True]
+        exit_ready=[r for r in outcome_rows if r.get("exit_replay_ready") is True]
 
-        # 3) Concrete partial-take variants; replay still requires an observed runner target.
-        captures=[_num(r.get("capture_ratio")) for r in valid]
-        captures=[x for x in captures if x is not None and 0<=x<=1]
-        if captures:
-            mean_capture=sum(captures)/len(captures)
-            if mean_capture<0.35:
-                for fraction in EXIT_FIRST_TARGET_FRACTIONS:
-                    out.append(_hypothesis(
-                        "EXIT_CAPTURE",
-                        scope,
-                        {"first_target_fraction":fraction,"baseline_first_target_fraction":0.50,
-                         "requires_runner_target":True,
-                         "action":"SHADOW_REPLAY_PARTIAL_TP_AND_STRUCTURAL_RUNNER"},
-                        {"n":len(captures),"mean_capture_ratio":mean_capture,
-                         "counterfactual_execution_proven":False}
-                    ))
+        if len(stop_ready)>=MIN_TRADE_N:
+            evidence={"outcome_n":len(outcome_rows),"replay_geometry_n":len(stop_ready),
+                      "path_evidence_n":len(path_rows),"counterfactual_execution_proven":False}
+            if path_rows:
+                adverse=sorted(abs(_num(r.get("mae")) or 0.0) for r in path_rows)
+                fav=sorted(max(0.0,_num(r.get("mfe")) or 0.0) for r in path_rows)
+                evidence.update(median_mae=adverse[len(adverse)//2],
+                                median_mfe=fav[len(fav)//2])
+            for buffer_atr in STOP_BUFFER_ATR_CANDIDATES:
+                out.append(_hypothesis(
+                    "STOP_GEOMETRY",
+                    scope,
+                    {"stop_buffer_atr":buffer_atr,"baseline_stop_buffer_atr":0.15,
+                     "action":"SHADOW_REPLAY_ONLY","anchor":"SAME_TIMEFRAME_STRUCTURE"},
+                    evidence
+                ))
+
+        # 3) Explicit partial-take variants are bounded research candidates.
+        # They require a frozen runner target in the original event and can only
+        # earn support via the future ordered-replay registry.
+        if len(exit_ready)>=MIN_TRADE_N:
+            captures=[_num(r.get("capture_ratio")) for r in path_rows]
+            captures=[x for x in captures if x is not None and 0<=x<=1]
+            evidence={"outcome_n":len(outcome_rows),"replay_geometry_n":len(exit_ready),
+                      "path_evidence_n":len(path_rows),"counterfactual_execution_proven":False}
+            if captures:
+                evidence["mean_capture_ratio"]=sum(captures)/len(captures)
+            for fraction in EXIT_FIRST_TARGET_FRACTIONS:
+                out.append(_hypothesis(
+                    "EXIT_CAPTURE",
+                    scope,
+                    {"first_target_fraction":fraction,"baseline_first_target_fraction":0.50,
+                     "requires_runner_target":True,
+                     "action":"SHADOW_REPLAY_PARTIAL_TP_AND_STRUCTURAL_RUNNER"},
+                    evidence
+                ))
 
     # 4) Strategy router: use only observed directional hit rates by regime.
     router=defaultdict(lambda:defaultdict(lambda:[0,0]))
