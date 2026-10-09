@@ -46,6 +46,26 @@ def stamped_trade(*,after=.10,step=.01,net=30.):
 
 
 class TradeObservationTests(unittest.TestCase):
+    def test_export_diagnostics_are_bounded_and_never_emit_payloads(self):
+        t,_=stamped_trade()
+        t.update(episode_outcome_eligible=True,episode_eligible=False)
+        rows=[t,dict(t,trade_id="two",episode_outcome_eligible=False,episode_eligible=True)]
+        reasons=Counter({"MISSING_PROSPECTIVE_POLICY_STAMP":2,"bad prose with spaces":1})
+        d=T._export_diagnostics(rows,0,reasons)
+        self.assertEqual(d["scanned"],2)
+        self.assertEqual(d["submitted"],0)
+        self.assertEqual(d["outcome_evidence_rows"],1)
+        self.assertEqual(d["path_evidence_rows"],1)
+        self.assertEqual(d["prospective_stamp_rows"],2)
+        self.assertEqual(d["normalized_quantity_rows"],2)
+        self.assertEqual(d["net_stop_budget_rows"],2)
+        self.assertEqual(d["single_fill_rows"],2)
+        self.assertEqual(d["top_exclusions"][0],
+                         {"reason":"MISSING_PROSPECTIVE_POLICY_STAMP","n":2})
+        self.assertEqual(d["top_exclusions"][1],{"reason":"OTHER_EXCLUSION","n":1})
+        self.assertNotIn("trade_id",json.dumps(d))
+        self.assertNotIn("payload",json.dumps(d))
+
     def test_native_trade_without_probability_trains_and_preserves_its_rr_trial(self):
         t,_=stamped_trade();stamp=t['payload']['entry_canonical_admission']['autonomous_learning']
         stamp.update(base_probability=None,net_reward_risk=1.2,max_fraction=.5,prospective_candidates=[])
@@ -449,6 +469,10 @@ class TradeLearningSQLTests(unittest.TestCase):
             result=self.worker.process(self.context)
         self.assertEqual(result['scanned'],T.BATCH_SIZE)
         self.assertEqual(result['submitted'],0)  # Missing verified episodes stay rejected.
+        self.assertEqual(result['export_diagnostics']['scanned'],T.BATCH_SIZE)
+        self.assertEqual(result['export_diagnostics']['submitted'],0)
+        self.assertEqual(result['export_diagnostics']['excluded'],T.BATCH_SIZE)
+        self.assertTrue(result['export_diagnostics']['top_exclusions'])
         self.assertEqual(len(calls),1)
         query,args=calls[0]
         self.assertEqual(args[-1],4)
