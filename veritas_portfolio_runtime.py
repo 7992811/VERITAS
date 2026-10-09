@@ -1412,6 +1412,11 @@ def _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=None):
                 "WHERE trade_id=%s",
                 (json.dumps(patch,ensure_ascii=False,default=str),tid)
             )
+        # Borrowed book snapshots remain authoritative for later wrappers in
+        # this same transaction. Mirror the durable patch locally so a later
+        # layer cannot repeat an already executed giveback harvest.
+        if isinstance(z0,dict):
+            local=_v90j_json(z0.get('payload')); local.update(patch); z0['payload']=local
         changes.append({
           'portfolio':name,'asset':asset,'direction':direction,
           'mfe_pct':mfe,'current_profit_pct':current_pct,
