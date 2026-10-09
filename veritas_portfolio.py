@@ -64,7 +64,7 @@ def _execution_price_or_none(prices, asset):
 
 # VERITAS v90 portfolio migration
 V90_PORTFOLIOS = tuple(CTC.PORTFOLIO_ORDER)
-PORTFOLIO_MIGRATION_MARKER = 'v90_four_portfolios_20260925'
+PORTFOLIO_MIGRATION_MARKER = 'v90_five_portfolios_20261009'
 SCHEMA_LOCK_TIMEOUT_MS = 2000
 SCHEMA_STATEMENT_TIMEOUT_MS = 8000
 # Match every column consumed by the schema below, including the delivery outbox.
@@ -86,8 +86,9 @@ PORTFOLIO_SCHEMA_COLUMNS = {name: set(columns.split()) for name, columns in {
         claim_token worker_id lease_until send_started_at sent_at telegram_message_id last_error_code''',
 }.items()}
 PORTFOLIO_SCHEMA_INDEXES = {
-    'paper_trades': {'idx_paper_trades_portfolio_closed'},
-    'paper_orders': {'idx_paper_orders_client_order_id', 'idx_paper_orders_portfolio_ts'},
+    'paper_trades': {'idx_paper_trades_portfolio_closed','idx_paper_trades_event_reuse'},
+    'paper_orders': {'idx_paper_orders_client_order_id','idx_paper_orders_portfolio_ts',
+                     'idx_paper_orders_trade_side'},
     VCN.TABLE: {'idx_currency_alerts_delivery'},
 }
 
@@ -120,11 +121,10 @@ def _v90_copy_portfolio_table(c, table, name_column):
     if not cols:
         return 0
     qcols=','.join(_v90_port_ident(x) for x in cols)
-    names="'Impulse','Aggressive','Champion','Challenger'"
     sql=(f'INSERT INTO {_v90_port_ident(table)} ({qcols}) '
          f'SELECT {qcols} FROM public.{_v90_port_ident(table)} '
-         f'WHERE {_v90_port_ident(name_column)} IN ({names}) ON CONFLICT DO NOTHING')
-    cur=c.execute(sql)
+         f'WHERE {_v90_port_ident(name_column)}=ANY(%s) ON CONFLICT DO NOTHING')
+    cur=c.execute(sql,(list(V90_PORTFOLIOS),))
     try: return max(0,int(cur.rowcount))
     except Exception: return 0
 
@@ -215,6 +215,10 @@ def _create_portfolio_schema(c):
           setup TEXT, horizon TEXT, payload JSONB NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_paper_trades_portfolio_closed ON paper_trades(portfolio_name,closed_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_paper_trades_event_reuse
+          ON paper_trades(portfolio_name,asset,direction,(payload->>'r66_event_id'));
+        CREATE INDEX IF NOT EXISTS idx_paper_orders_trade_side
+          ON paper_orders(trade_id,side);
         CREATE TABLE IF NOT EXISTS paper_orders(
           order_id BIGSERIAL PRIMARY KEY, portfolio_name TEXT NOT NULL, trade_id TEXT,
           created_at TIMESTAMPTZ NOT NULL, asset TEXT NOT NULL, side TEXT NOT NULL,

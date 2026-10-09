@@ -2,6 +2,7 @@
 from collections.abc import Mapping
 import os
 import time
+import threading
 
 try:
     from psycopg.pq import TransactionStatus
@@ -10,6 +11,9 @@ except ImportError:  # Non-PostgreSQL fixtures must retain their existing behavi
 
 
 SET_LZ4_SQL = "SET LOCAL default_toast_compression = 'lz4'"
+_METADATA_CACHE_TTL_SECONDS = 300.0
+_metadata_cache_lock = threading.Lock()
+_metadata_cache = {'at': 0.0, 'value': None}
 METADATA_SQL = """
 SELECT pg_catalog.current_setting('default_toast_compression', true) AS current_method,
        (SELECT 'lz4' = ANY(s.enumvals) FROM pg_catalog.pg_settings s
@@ -77,13 +81,23 @@ def prepare(c, *, requested=None):
     requested = requested.strip().lower() if isinstance(requested, str) else None
     if requested != 'lz4':
         return None
+    now = time.monotonic()
+    with _metadata_cache_lock:
+        cached = _metadata_cache.get('value')
+        age = now - float(_metadata_cache.get('at') or 0.0)
+        if isinstance(cached, Mapping) and 0.0 <= age < _METADATA_CACHE_TTL_SECONDS:
+            return {'requested':'lz4','metadata':dict(cached),'cached':True}
     with c.transaction():
         metadata = c.execute(METADATA_SQL).fetchone()
     if not isinstance(metadata, Mapping):
         return None
     keys = ('current_method','lz4_supported','positions_compression','positions_storage',
             'trades_compression','trades_storage')
-    return {'requested':'lz4','metadata':{key:metadata.get(key) for key in keys}}
+    compact={key:metadata.get(key) for key in keys}
+    with _metadata_cache_lock:
+        _metadata_cache['at']=time.monotonic()
+        _metadata_cache['value']=dict(compact)
+    return {'requested':'lz4','metadata':compact,'cached':False}
 
 def configure(c, *, requested=None, prepared=None):
     """Return small diagnostics; the outer book transaction owns commit/rollback.
