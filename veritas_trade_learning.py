@@ -48,6 +48,24 @@ def _hash(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),default=str,allow_nan=False).encode()).hexdigest()
 
 
+def bounded_exclusion_summary(value):
+    """Bounded aggregate diagnostics only; never expose trade IDs or raw reason prose."""
+    counts=Counter()
+    for raw,count in dict(value or {}).items():
+        code=str(raw or '').strip().upper()
+        if (not code or len(code)>64
+                or any(ch not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_' for ch in code)):
+            code='OTHER'
+        try:
+            n=max(0,int(count))
+        except (TypeError,ValueError,OverflowError):
+            n=0
+        if n:
+            counts[code]+=n
+    top=counts.most_common(8)
+    return {'excluded_total':sum(counts.values()),'exclusions':dict(top)}
+
+
 def observation(trade, *, now=None):
     """Freeze one size experiment in common baseline net-stop-risk units.
 
@@ -406,8 +424,11 @@ class TradeLearning:
                 raise RuntimeError('learning job lease expired before progress commit')
             if published_snapshot is not None:
                 result['snapshot']=dict(published_snapshot,**self.validation_status())
-            self._emit_phase(phase,'OK',next_stage=cursor['phase'],**{
-                key:result[key] for key in ('materialized','scanned','submitted','checked','revoked') if key in result})
+            phase_fields={
+                key:result[key] for key in ('materialized','scanned','submitted','checked','revoked') if key in result}
+            if phase=='export' and 'exclusions' in result:
+                phase_fields.update(bounded_exclusion_summary(result.get('exclusions')))
+            self._emit_phase(phase,'OK',next_stage=cursor['phase'],**phase_fields)
             return result
         except MaintenanceDeferred as ex:
             # Preserve the committed cursor/last-good result when the lane's
