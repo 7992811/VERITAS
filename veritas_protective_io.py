@@ -23,6 +23,9 @@ PROTECTION_FIELDS = (
     'r_accel_mfe_candidate_pct', 'r_accel_mfe_candidate_timeframe',
     'r_accel_mfe_candidate_elapsed_seconds', 'r_accel_mfe_profit_lock_active',
     'r_accel_mfe_protection_waiting_cost_cover',
+    'r_accel_mfe_capture_ratio', 'r_accel_mfe_capture_mode',
+    'r_accel_mfe_lock_tier', 'r_accel_mfe_adaptive_lock_pct',
+    'last_trend_day_efficiency',
     'last_add_price', 'last_add_at', 'mfe_before_last_add_pct',
     'mfe_since_last_add_pct', 'mae_since_last_add_pct', 'add_count', 'add_fee_rub',
     'r63_profit_lock_rearm_after_pct', 'entry_nav_rub', 'r55_net_profit_lock_active',
@@ -146,9 +149,12 @@ def write_position_patches(c, patches, *, optional=False):
 def write_patches_one_roundtrip(c, patches, *, optional=False):
     """Write mirrored metadata with one SQL call per batch of up to 32 rows.
 
-    This preserves the same atomic two-table payload state as the existing
-    writer while avoiding duplicate JSON transmission and a second round-trip.
+    Use the writable-CTE optimization only on a real psycopg/PostgreSQL
+    connection. Lightweight deterministic adapters intentionally implement the
+    established two-statement contract and must not receive unsupported SQL.
     """
+    if not (hasattr(c,'pgconn') or type(c).__module__.startswith('psycopg')):
+        return write_patches(c, patches, optional=optional)
     applied = set()
     for chunk in _chunks(patches):
         if not optional:
@@ -159,15 +165,25 @@ def write_patches_one_roundtrip(c, patches, *, optional=False):
             with c.transaction():
                 _write_chunk_one_roundtrip(c, chunk)
         except Exception:
-            if len(chunk) == 1:
-                continue
-            for row in chunk:
-                try:
-                    with c.transaction():
-                        _write_chunk_one_roundtrip(c, [row])
-                except Exception:
+            # Compatibility/failure-safe fallback: some lightweight test or
+            # alternate DB adapters do not support writable CTEs. Preserve the
+            # exact two-table semantics through the established writer rather
+            # than dropping optional protective evidence.
+            try:
+                with c.transaction():
+                    _write_chunk(c, chunk)
+            except Exception:
+                if len(chunk) == 1:
                     continue
-                applied.add(row['trade_id'])
+                for row in chunk:
+                    try:
+                        with c.transaction():
+                            _write_chunk(c, [row])
+                    except Exception:
+                        continue
+                    applied.add(row['trade_id'])
+            else:
+                applied.update(row['trade_id'] for row in chunk)
         else:
             applied.update(row['trade_id'] for row in chunk)
     return applied
