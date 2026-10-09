@@ -8,11 +8,12 @@ they have no authority to override canonical admission or portfolio limits.
 Principle: one trading decision -> one canonical policy path.
 """
 from __future__ import annotations
+import veritas_owner_policy as OP
 
 VERSION = "CTC_V2_2026_10_06"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
 
-STRATEGY_EPOCH = "EQ7_2026_10_07_INTRABAR_STRUCTURE"
+STRATEGY_EPOCH = "EQ8_2026_10_09_OWNER_TRADE_REVIEW"
 STRATEGY_ROLE_POLICY = {
     "IMPULSE_ONLY": {"name":"EARLY_IMPULSE","horizons":("1m","5m","1h"),"min_independent":2},
     "AGGRESSIVE": {"name":"CONFIRMED_TREND","horizons":("5m","1h","4h","1d"),
@@ -328,6 +329,7 @@ LIFECYCLE_POLICY = {
         "or an actual thesis/risk exit."
     ),
 }
+LIFECYCLE_POLICY.update({"profit_lock_requires_consecutive_positive_windows":OP.PROFIT_MATURITY["required_positive_windows"],"profit_lock_window_seconds_floor":OP.PROFIT_MATURITY["window_seconds_floor"],"profit_lock_minimum_dwell_seconds":OP.PROFIT_MATURITY["minimum_dwell_seconds"],"profit_lock_first_two_positive_windows_observe_only":OP.PROFIT_MATURITY["first_two_positive_windows_observe_only"],"profit_lock_floor":OP.PROFIT_MATURITY["floor"],"structural_trailing_before_profit_maturity":OP.PROFIT_MATURITY["structural_trailing_before_maturity"],"structural_trailing_after_profit_maturity":OP.PROFIT_MATURITY["structural_trailing_after_maturity"],**OP.PORTFOLIO_PARITY})
 
 SETUP_GRADES = {
     "A+": "Institutional quality; eligible for strongest scaling subject to risk.",
@@ -355,6 +357,7 @@ LEARNING_POLICY = {
     ),
     "knowledge_count_does_not_raise_intelligence_by_itself": True,
 }
+LEARNING_POLICY.update({"owner_teaching_id":OP.TEACHING_ID,"closed_trade_postmortem_required":OP.SELF_LEARNING["closed_trade_postmortem_required"],"postmortem_dimensions":OP.SELF_LEARNING["dimensions"],"canonical_conflict_scan_required":OP.SELF_LEARNING["canonical_conflict_scan_required"],"parameter_search_default":OP.SELF_LEARNING["parameter_search_default"],"owner_verification_required_for_rule_promotion":OP.SELF_LEARNING["owner_verification_required_for_rule_promotion"],"owner_comments_are_durable_training_evidence":OP.SELF_LEARNING["owner_comments_are_durable_training_evidence"]})
 
 
 def _rule(rule_id, domain, statement):
@@ -395,7 +398,7 @@ CANONICAL_RULES = [
     _rule("CTC28","structure","RANGE_LOW_VOL requires stronger evidence because false-breakout risk is elevated."),
     _rule("CTC29","structure","Retest/hold after a break is an independent entry family and may define a fresh continuation event."),
     _rule("CTC30","multitimeframe","Quote breakouts explicitly record trigger, structural-stop, ATR and historical-target timeframes. A fast entry may borrow a certified parent swing only while that parent risk context remains structurally valid; otherwise it must use independently valid fast-TF risk geometry or be blocked."),
-    _rule("CTC31","multitimeframe","Senior directional context can reduce tactical size but does not automatically veto a qualified fast breakout/reversal. An explicit structural failure of a senior timeframe whose swing/ATR is borrowed for risk is a hard risk-context veto."),
+    _rule("CTC31","multitimeframe","Senior directional context can reduce tactical size but does not automatically veto a qualified fast breakout/reversal. Explicit structural failure of a senior timeframe whose swing/ATR is borrowed for risk is a hard risk-context veto."),
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
 
     _rule("CTC33","economics","Commission is 0.04% per side and paper slippage is 0.04% per side unless a more conservative observed spread applies."),
@@ -418,16 +421,16 @@ CANONICAL_RULES = [
     _rule("CTC48","add","Never automatically average a losing position; pyramiding is earned by favorable movement and new evidence."),
     _rule("CTC49","stop","LONG stop sits below the previous confirmed swing low of the entry timeframe, SHORT above its swing high, with that same timeframe's ATR buffer."),
     _rule("CTC50","stop","Stops never widen after protection or reload; LONG protection ratchets upward, SHORT downward."),
-    _rule("CTC51","profit","Breakeven is true economic breakeven after paid/projected costs. Owner lifecycle policy may require sustained profitable observations before arming it, while transient early profit leaves the original stop architecture intact."),
+    _rule("CTC51","profit","Breakeven is true economic breakeven after paid/projected costs. It is armed only after three distinct consecutive profitable management windows and the minimum dwell; the first two transient positive impulses do not alter the original stop architecture."),
     _rule("CTC52","profit","Partial profit is dynamic: stronger trend -> smaller harvest and larger runner; weakening/near obstacle -> larger harvest."),
     _rule("CTC53","profit","After harvest, reload is a new add decision requiring fresh breakout/structure/volume and positive post-cost economics."),
     _rule("CTC54","exit","Soft INVALIDATED, generic WAIT or a tiny opposite fast signal cannot force a fee-negative discretionary exit while thesis and hard risk remain intact."),
 
-    _rule("CTC55","exit","Immediate full exit authority is reserved for true stop/risk breach, explicit hard thesis invalidation, confirmed direction flip/structural failure or portfolio hard stop. Owner lifecycle policy may propagate a proved hard invalidation to portfolio copies of the same canonical setup."),
+    _rule("CTC55","exit","Immediate full exit authority is reserved for true stop/risk breach, explicit hard thesis invalidation, confirmed direction flip/structural failure or portfolio hard stop. A hard invalidation of a canonical setup is shared by every open portfolio copy of that same setup."),
     _rule("CTC56","learning","One market episode is one independent learning observation even if multiple portfolios traded it."),
     _rule("CTC57","learning","Classify direction error separately from late entry, stop error, exit error, sizing error and source/data error."),
     _rule("CTC58","learning","Management-dominated losses must not be interpreted automatically as evidence that trade direction was wrong."),
-    _rule("CTC59","learning","New knowledge/rules begin in SHADOW and require OOS, Vault, cost and regime/time robustness before promotion. Closed-trade postmortems and owner verification may be required by the active owner-learning policy."),
+    _rule("CTC59","learning","Every closed trade receives a structured postmortem. New knowledge/rules and parameter changes begin in SHADOW, must pass canonical-conflict checks plus OOS, Vault, cost and regime/time robustness, and require owner verification before promotion."),
     _rule("CTC60","learning","Intelligence rises from validated decision/outcome quality and clean learning, not from the raw count of stored rules."),
 ]
 
