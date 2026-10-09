@@ -187,7 +187,7 @@ class BookMarkingTests(unittest.TestCase):
                         and isinstance(n.func, ast.Name) and n.func.id == '_portfolio_rows'),
                        key=lambda n: n.lineno)
         self.assertEqual([[(k.arg, ast.literal_eval(k.value)) for k in n.keywords] for n in calls],
-                         [[], [], [('mark_only', True)], [('mark_only', True)]])
+                         [[], [('mark_only', True)], [('mark_only', True)]])
         c = MemoryConnection([position()])
         before = H._portfolio_rows(c, PORTFOLIO, mark_only=True)
         c.account.update(realized_pnl_rub=37., fees_rub=17., funding_rub=11.)
