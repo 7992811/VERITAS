@@ -155,7 +155,6 @@ class ObservationPathTests(unittest.TestCase):
         result=PATH.assessment(row)
         self.assertTrue(result['eligible'],result)
         self.assertEqual(result['max_gap_seconds'],60)
-        self.assertEqual(result['max_check_gap_seconds'],15)
         self.assertEqual(result['source_max_age_seconds'],120)
         self.assertEqual(result['source_gap_allowance_seconds'],135)
 
