@@ -32,6 +32,18 @@ def prepare(row, quote, direction, requested, position, nav, ts, policy, *, gros
         return _failure('TARGET_ALREADY_REACHED',status='HELD')
     canonical=bool((row.get('_canonical_admission') or {}).get('open'))
     policy=dict(policy)
+    # A confirmed trend-acceleration state may temporarily earn more nominal
+    # exposure, but never more stop-risk. Currency/live semantics are excluded.
+    acceleration=row.get('_trend_acceleration') or {}
+    if acceleration.get('active') and str(policy.get('mode') or '')!='CURRENCY':
+        cfg=getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}
+        caps=(cfg.get('temporary_caps') or {}).get(str(policy.get('mode') or '')) or {}
+        if caps:
+            base_fraction=float(policy.get('max_fraction',policy.get('max_single_asset_fraction',0.0)) or 0.0)
+            base_gross=float(policy.get('max_gross') or 0.0)
+            policy['max_fraction']=max(base_fraction,float(caps.get('max_fraction') or base_fraction))
+            policy['max_single_asset_fraction']=policy['max_fraction']
+            policy['max_gross']=max(base_gross,float(caps.get('max_gross') or base_gross))
     governor=(row.get('_canonical_admission') or {}).get('risk_governor') or {}
     if governor.get('new_risk') is False:
         return _failure('RISK_GOVERNOR_HARD_STOP')
@@ -83,4 +95,5 @@ def prepare(row, quote, direction, requested, position, nav, ts, policy, *, gros
         return _failure('EXECUTION_SNAPSHOT_MISMATCH',gate,budget)
     return {'eligible':True,'status':'PASS','reason':'VERIFIED_EXECUTION_READY',
             'gate':gate,'stop_risk_budget':budget,'target_fraction':total,
-            'add_notional_rub':(total-current)*nav,'fill':fill}
+            'add_notional_rub':(total-current)*nav,'fill':fill,
+            'trend_acceleration':acceleration if acceleration.get('active') else None}
