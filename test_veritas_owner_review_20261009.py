@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import veritas_canonical_constitution as CTC
@@ -98,6 +99,35 @@ class OwnerReviewPolicyTests(unittest.TestCase):
         self.assertFalse(x["eligible"])
         self.assertEqual(x["reason"],"PROFIT_MATURITY_NOT_CONFIRMED")
         self.assertEqual(x["positive_streak"],2)
+
+    def test_loss_inside_profit_window_resets_streak_and_same_window_rebound_cannot_restore_it(self):
+        class DB:
+            def execute(self,*args,**kwargs):
+                return self
+        opened="2026-10-09T00:00:00+00:00"
+        observed="2026-10-09T02:20:00+00:00"
+        bucket=int(datetime.fromisoformat(observed).timestamp()//3600)
+        position={"direction":"LONG","avg_entry_price":100.0,"opened_at":opened,
+                  "asset":"GOLD","active_trade_id":"T1",
+                  "payload":{"timeframe_entry_context":{"event":{"structural_timeframe":"1h"}},
+                             "profit_maturity_last_window":bucket,
+                             "profit_maturity_positive_streak":2,
+                             "profit_maturity_current_window_positive":True,
+                             "profit_maturity_first_positive_at":datetime.fromisoformat("2026-10-09T01:05:00+00:00").timestamp()}}
+        def assess(_c,_z,**kw):
+            px=float(kw.get("price") or 0)
+            return {"net_profit_protection":{"net_at_stop_rub":1.0 if px>100 else -1.0,
+                                             "break_even_stop_price":100.2}}
+        now=datetime.fromisoformat("2026-10-09T02:25:00+00:00")
+        with patch("veritas_profit_maturity.VPP.assess",side_effect=assess):
+            down=VPM.observe(DB(),"Champion",position,{"price":99.9,"observed_at":observed},now)
+            self.assertEqual(down["positive_streak"],0)
+            self.assertFalse(down["patch"]["profit_maturity_current_window_positive"])
+            rebound=VPM.observe(DB(),"Champion",down["position"],
+                                {"price":101.0,"observed_at":"2026-10-09T02:40:00+00:00"},
+                                datetime.fromisoformat("2026-10-09T02:45:00+00:00"))
+            self.assertEqual(rebound["positive_streak"],0)
+            self.assertFalse(rebound["patch"]["profit_maturity_current_window_positive"])
 
     def test_mature_flag_without_economic_floor_still_blocks_trailing(self):
         position={"direction":"LONG","payload":{"structural_policy_version":"X",
