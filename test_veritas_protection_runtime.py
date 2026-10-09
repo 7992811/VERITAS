@@ -255,28 +255,21 @@ class BoundedProtectiveTests(unittest.TestCase):
         self.addCleanup(c.projection.db.close)
         return c
 
-    def test_structural_no_exit_pass_reads_once_and_batches_without_legacy_work(self):
+    def test_structural_no_exit_pass_is_read_only_and_sidecar_owned(self):
         rows = [position(i, structural=True)[0] for i in range(33)]
         q = position()[1]
         c = self.connection(rows)
+        before_positions=deepcopy(c.positions);before_trades=deepcopy(c.trades)
         with patch.object(G, 'exit_fill', side_effect=AssertionError('irrelevant legacy fill')):
             self.assertEqual(G.run_protective_pass(None, c.connect, {'ETH': q}, NOW), [])
         selects = [sql for sql, args in c.sql if sql.startswith('SELECT') and 'advisory' not in sql]
         writes = [args for sql, args in c.sql if 'jsonb_to_recordset' in sql]
         self.assertEqual(selects, [PR.PROTECTION_SQL+' ORDER BY portfolio_name,asset FOR UPDATE'])
-        self.assertEqual(len(writes), 2)
-        self.assertEqual([len(json.loads(args[0])) for args in writes], [32, 1])
-        self.assertEqual(c.commits, 1)
-        for index, (tid, saved) in enumerate(c.positions.items()):
-            self.assertEqual(saved['payload']['immutable_history'], rows[0]['payload']['immutable_history'])
-            self.assertEqual(saved['payload']['observation_path']['observation_count'], 1)
-            self.assertEqual(saved['payload']['mfe_pct'], 1.5)
-            self.assertEqual(saved['payload']['source_locked_mark']['price'], 101.)
-            # No-action telemetry is live-position evidence. The open trade row
-            # intentionally remains at its previous snapshot until an action
-            # revalidates and mirrors the current witness at the accounting boundary.
-            self.assertEqual(c.trades[tid]['payload'], rows[index]['payload'])
+        self.assertEqual(writes, [])
+        self.assertEqual(c.positions,before_positions)
+        self.assertEqual(c.trades,before_trades)
         self.assertEqual(c.orders, [])
+
 
     def test_required_batch_failure_propagates_and_optional_savepoint_rolls_back_both_tables(self):
         z, unused = position()
@@ -311,19 +304,17 @@ class BoundedProtectiveTests(unittest.TestCase):
                 self.assertEqual(c.positions[tid]['payload'], expected)
                 self.assertEqual(c.trades[tid]['payload'], expected)
 
-    def test_one_nonfinite_optional_witness_does_not_discard_healthy_neighbours(self):
+    def test_nonfinite_no_action_witness_is_left_to_sidecar_without_book_write(self):
         rows = [position(i, structural=True)[0] for i in range(3)]
         rows[1]['payload']['mfe_pct'] = 'NaN'
         c = self.connection(rows)
+        before_positions=deepcopy(c.positions);before_trades=deepcopy(c.trades)
         self.assertEqual(G.run_protective_pass(None, c.connect, {'ETH': position()[1]}, NOW), [])
-        for index in (0, 2):
-            self.assertIn('observation_path', c.positions[rows[index]['active_trade_id']]['payload'])
-        self.assertNotIn('observation_path', c.positions[rows[1]['active_trade_id']]['payload'])
-        self.assertEqual(c.positions[rows[1]['active_trade_id']]['payload']['mfe_pct'], 'NaN')
+        self.assertEqual(c.positions,before_positions)
+        self.assertEqual(c.trades,before_trades)
         batches = [json.loads(args[0]) for sql, args in c.sql if 'jsonb_to_recordset' in sql]
-        self.assertEqual([len(items) for items in batches], [1, 1])
-        self.assertEqual([batch[0]['trade_id'] for batch in batches],
-                         [rows[0]['active_trade_id'], rows[2]['active_trade_id']])
+        self.assertEqual(batches, [])
+
 
     def test_exit_rehydrates_full_row_and_optional_metadata_failure_cannot_block_stop(self):
         for fail_metadata in (False, True):
