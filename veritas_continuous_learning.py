@@ -378,6 +378,12 @@ class ContinuousLearning:
             self.boot_phase = 2
             return {"status": "PROGRESS", "stage": "FORECAST_SCHEMA"}
         if self.boot_phase == 2:
+            # Startup is two-phase: the periodic learning lane can run before
+            # the portfolio runtime is bound into the shared namespace. Treat
+            # that ordering window as retryable readiness, never as an error.
+            vp=self.ns.get("VP")
+            if vp is None or not callable(getattr(vp, "_v90r29_ensure", None)):
+                return {"status": "RETRY", "reason": "PORTFOLIO_RUNTIME_NOT_READY"}
             from veritas_trade_learning import TradeLearning
             self.trade = TradeLearning(self.ns)
             if hasattr(self.trade, "ensure_schema"):

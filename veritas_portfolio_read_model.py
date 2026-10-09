@@ -5,6 +5,7 @@ stay historical; current balances use the current ledger and the already selecte
 entry-source-pinned position marks.
 """
 import logging
+import traceback
 import math
 import threading
 import time
@@ -201,8 +202,14 @@ def portfolio_snapshot_read(refresh, cache, cache_lock, *, wait_seconds=1.):
         except Exception as error:
             # A worker may finish after its HTTP caller has returned. Keep a
             # bounded diagnostic without logging database URLs or payloads.
-            logging.getLogger(__name__).warning('Portfolio snapshot refresh failed: %s',
-                                                type(error).__name__)
+            frames=traceback.extract_tb(error.__traceback__, limit=8)
+            last=frames[-1] if frames else None
+            logging.getLogger(__name__).warning(
+                'Portfolio snapshot refresh failed: %s at %s:%s:%s',
+                type(error).__name__,
+                (last.filename.rsplit('/',1)[-1] if last else 'unknown'),
+                (last.lineno if last else 0),
+                (last.name if last else 'unknown'))
             error.__traceback__ = None
             error.__context__ = None
             error.__cause__ = None
