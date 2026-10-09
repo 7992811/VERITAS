@@ -2924,7 +2924,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
 
 _v90j_excursion_cycle = threading.local()
 
-def _v90j_update_excursions(c,name,prices,ts,positions=None):
+def _v90j_update_excursions(c,name,prices,ts,positions=None,force_mark=True):
     cycle_key=(id(c),str(name),str(ts))
     if getattr(_v90j_excursion_cycle,'key',None)==cycle_key:
         return positions if positions is not None else []
@@ -2965,19 +2965,23 @@ def _v90j_update_excursions(c,name,prices,ts,positions=None):
             payload=_v90j_json(z.get('payload'))
             old_mfe=_v90j_float(payload.get('mfe_pct'),0.0)
             old_mae=_v90j_float(payload.get('mae_pct'),0.0)
-            payload['mfe_pct']=max(0.0,old_mfe,signed)
-            payload['mae_pct']=min(0.0,old_mae,signed)
-            payload['last_mark_price']=px
-            payload['last_mark_at']=_v90j_iso(ts)
-            tid=z.get('active_trade_id')
-            delta=json.dumps({'mfe_pct':payload['mfe_pct'],'mae_pct':payload['mae_pct'],
-                              'last_mark_price':px,'last_mark_at':_v90j_iso(ts)},ensure_ascii=False,default=str)
-            value=delta if z.get('_excursion_object') else json.dumps(payload,ensure_ascii=False,default=str)
-            assignment='payload || %s::jsonb' if z.get('_excursion_object') else '%s::jsonb'
-            c.execute("UPDATE paper_positions SET payload="+assignment+" WHERE portfolio_name=%s AND asset=%s",
-                      (value,name,asset))
-            c.execute("UPDATE paper_trades SET payload=payload || %s::jsonb WHERE trade_id=%s",
-                      (delta,tid))
+            new_mfe=max(0.0,old_mfe,signed)
+            new_mae=min(0.0,old_mae,signed)
+            extrema_changed=bool(new_mfe!=old_mfe or new_mae!=old_mae)
+            payload['mfe_pct']=new_mfe
+            payload['mae_pct']=new_mae
+            if extrema_changed or force_mark:
+                payload['last_mark_price']=px
+                payload['last_mark_at']=_v90j_iso(ts)
+                tid=z.get('active_trade_id')
+                delta=json.dumps({'mfe_pct':new_mfe,'mae_pct':new_mae,
+                                  'last_mark_price':px,'last_mark_at':_v90j_iso(ts)},ensure_ascii=False,default=str)
+                value=delta if z.get('_excursion_object') else json.dumps(payload,ensure_ascii=False,default=str)
+                assignment='payload || %s::jsonb' if z.get('_excursion_object') else '%s::jsonb'
+                c.execute("UPDATE paper_positions SET payload="+assignment+" WHERE portfolio_name=%s AND asset=%s",
+                          (value,name,asset))
+                c.execute("UPDATE paper_trades SET payload=payload || %s::jsonb WHERE trade_id=%s",
+                          (delta,tid))
             z['payload']=payload
             updated.append(z)
         _v90j_excursion_cycle.key=cycle_key
@@ -8302,7 +8306,7 @@ def _v90r33_harvest(c,p,name,prices,nav,ts,positions=None):
         rows=[dict(z) for z in positions] if positions is not None else [
             dict(z) for z in c.execute(
                 "SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)).fetchall()]
-        _v90j_update_excursions(c,name,prices,ts,positions=rows)
+        _v90j_update_excursions(c,name,prices,ts,rows,False)
         if positions is not None:
             positions[:] = [dict(z) for z in rows]
     except Exception:

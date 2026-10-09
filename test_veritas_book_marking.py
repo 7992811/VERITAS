@@ -212,6 +212,24 @@ class BookMarkingTests(unittest.TestCase):
         self.assertLess(len(writes[0][2]), 1000)
         self.assertEqual(new.rows[0]['payload']['retained_history'], before['payload']['retained_history'])
 
+    def test_exact_same_source_observation_is_a_noop(self):
+        q=quote()
+        identity=S.identity('BTC',q)
+        row=position()
+        row['last_price']=float(q['price'])
+        row['payload'].update(
+            last_mark_price=float(q['price']),
+            last_mark_at=(NOW-timedelta(seconds=1)).isoformat(),
+            price_source_lock=identity,
+            price_source_status='OK',
+            source_locked_mark={'identity':identity,'price':float(q['price']),
+                                'observed_at':q['observed_at']})
+        G._quotes['BTC']=q
+        c=MemoryConnection([row])
+        self.assertEqual(H._v90j_mark_open_positions(c,PORTFOLIO,{'BTC':9999.},NOW),0)
+        self.assertFalse(any(sql.startswith('UPDATE') for sql,_ in c.statements))
+        self.assertEqual(c.rows[0],row)
+
     def test_marker_preserves_nonobject_behavior_and_skips_unusable_quotes(self):
         cases = [None, [], {}, [1], 7, False, 'null',
                  '{"entry_primary_source":"Binance spot","opaque":"synthetic"}']

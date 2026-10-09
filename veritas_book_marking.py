@@ -43,11 +43,30 @@ def mark_open_positions(c, name, prices, ts, *, positions=None, quote_for_positi
                 continue
         except Exception:
             continue
+        identity=VPS.position_identity(row)
+        observed_identity=VPS.identity(asset, quote)
+        source_mark={'identity': observed_identity,
+                     'price': price, 'observed_at': quote['observed_at']}
         patch = {'last_mark_price': price, 'last_mark_at': iso(ts),
-                 'price_source_lock': VPS.position_identity(row), 'price_source_status': 'OK',
-                 'source_locked_mark': {'identity': VPS.identity(asset, quote),
-                                        'price': price, 'observed_at': quote['observed_at']}}
-        if isinstance(row.get('payload'), dict):
+                 'price_source_lock': identity, 'price_source_status': 'OK',
+                 'source_locked_mark': source_mark}
+        payload=row.get('payload')
+        if isinstance(payload, dict):
+            prior_mark=payload.get('source_locked_mark')
+            repeated=bool(
+                row.get('last_price') is not None
+                and float(row.get('last_price'))==price
+                and payload.get('last_mark_price')==price
+                and payload.get('price_source_lock')==identity
+                and payload.get('price_source_status')=='OK'
+                and isinstance(prior_mark,dict)
+                and prior_mark.get('identity')==observed_identity
+                and prior_mark.get('price')==price
+                and prior_mark.get('observed_at')==quote.get('observed_at')
+            )
+            if repeated:
+                continue
+        if isinstance(payload, dict):
             value, assignment = patch, 'payload || %s::jsonb'
         else:
             value = decode_payload(row.get('payload'))

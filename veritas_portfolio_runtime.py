@@ -1297,30 +1297,33 @@ def _v90r46_mark_trend_hold(c,name,candidates,summary,ts,positions=None):
             except Exception:
                 row={}
         ctx=_v90r46_hold_context(name,z,row)
-        patch={
+        semantic={
           'r46_trend_hold_active':bool(ctx.get('active')),
           'r46_same_direction':bool(ctx.get('same_direction')),
           'r46_trend_strength_score':int(ctx.get('trend_strength_score') or 0),
           'r46_trend_phase':ctx.get('trend_phase'),
           'r46_horizon_state':ctx.get('horizon_state'),
           'r46_tp_runner_ratio':float(ctx.get('tp_runner_ratio') or 0.50),
-          'r46_hold_updated_at':_v90j_iso(ts),
         }
-        tid=z.get('active_trade_id')
-        c.execute(
-            "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-            "WHERE portfolio_name=%s AND asset=%s",
-            (json.dumps(patch,ensure_ascii=False,default=str),name,asset)
-        )
-        if tid:
+        current=_v90j_json(z.get('payload'))
+        changed=any(current.get(key)!=value for key,value in semantic.items())
+        if changed:
+            patch=dict(semantic,r46_hold_updated_at=_v90j_iso(ts))
+            tid=z.get('active_trade_id')
             c.execute(
-                "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                "WHERE trade_id=%s",
-                (json.dumps(patch,ensure_ascii=False,default=str),tid)
+                "UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                "WHERE portfolio_name=%s AND asset=%s",
+                (json.dumps(patch,ensure_ascii=False,default=str),name,asset)
             )
-        if isinstance(z0,dict):
-            local=_v90j_json(z0.get('payload')); local.update(patch); z0['payload']=local
-        marked.append({'asset':asset,**ctx})
+            if tid:
+                c.execute(
+                    "UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
+                    "WHERE trade_id=%s",
+                    (json.dumps(patch,ensure_ascii=False,default=str),tid)
+                )
+            if isinstance(z0,dict):
+                local=_v90j_json(z0.get('payload')); local.update(patch); z0['payload']=local
+        marked.append({'asset':asset,**ctx,'state_changed':changed})
     return marked
 
 def _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=None):
@@ -1469,7 +1472,7 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     try:
         p,pos=_portfolio_rows(c,name)
         pos=[dict(z) for z in pos]
-        _v90j_update_excursions(c,name,prices,ts,positions=pos)
+        _v90j_update_excursions(c,name,prices,ts,pos,False)
         _v90r46_mark_trend_hold(c,name,candidates,summary,ts,positions=pos)
         nav,_,_,_=_mark_nav(p,pos,prices)
         _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=pos)
