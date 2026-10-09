@@ -145,6 +145,30 @@ class LearningRuntimeTests(unittest.TestCase):
         self.assertTrue(all(x!=a for x in variants))
         self.assertEqual(len(set(variants)),len(variants))
 
+    def test_decision_episode_materialization_contains_admission_and_exact_source(self):
+        source=Path('veritas_intelligence.py').read_text()
+        materialize=source[source.index('def _v90_materialize_decision_episode'):
+                           source.index('def _v90_backfill_decision_episodes')]
+        for field in ('decision_id','setup_family','policy_hash','source_key','contract_id',
+                      'candidate_direction','admission_eligible','final_gate_status',
+                      'final_gate_blockers','plan_reason','trade_entry_reason',
+                      'execution_reason','paper_execution_reason'):
+            self.assertIn(field,materialize)
+        self.assertIn("{learning_provenance,quote,source_identity,key}",materialize)
+        self.assertIn("{learning_provenance,quote,source_identity,contract_id}",materialize)
+        self.assertNotIn("{learning_provenance,source_identity,key}",materialize)
+
+    def test_decision_episode_schema_has_materialized_learning_columns_and_asset_index(self):
+        source=Path('veritas_intelligence.py').read_text()
+        schema=source[source.index('CREATE TABLE IF NOT EXISTS v90_decision_episodes'):
+                      source.index('CREATE TABLE IF NOT EXISTS knowledge_sources')]
+        for field in ('decision_id BIGINT','setup_family TEXT','policy_hash TEXT',
+                      'source_key TEXT','contract_id TEXT','candidate_direction TEXT',
+                      'admission_eligible BOOLEAN','final_gate_status TEXT',
+                      'final_gate_blockers JSONB'):
+            self.assertIn(field,schema)
+        self.assertIn('idx_v90_decision_episodes_asset_ts',schema)
+
     def test_memory_trim_preserves_small_last_good_progress(self):
         tree = ast.parse(Path('veritas_intelligence.py').read_text())
         node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == '_v90_prune_low_priority_caches')
