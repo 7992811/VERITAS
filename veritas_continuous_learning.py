@@ -34,6 +34,7 @@ PROGRESS_VERSION = "NONOVERLAPPING_LEARNING_PROGRESS_V1"
 HORIZON_SECONDS = {"1m": 60, "5m": 300, "1h": 3600, "4h": 14400,
                    "1d": 86400, "3d": 259200, "7d": 604800}
 BATCH = 32
+OUTCOME_BATCH = 8
 INGEST_BATCH = 8
 INITIAL_LOOKBACK = 2000
 MAX_PENDING = 4096
@@ -501,45 +502,58 @@ class ContinuousLearning:
         return GUARD.quote_for_position({"asset": forecast["asset"], "payload": {"price_source_lock": identity}}, now=now)
 
     def outcomes(self, context, cursor):
-        now = clock()
-        resolved = excluded = scanned = 0
-        deferred = False
-        with transaction(self.connect, context) as c:
-            rows = c.execute("""SELECT id,entity_key,decision_at,due_at,expires_at,asset,horizon,evidence
-                FROM learning_forecasts WHERE status='PENDING' AND due_at<=%s
-                ORDER BY due_at,id LIMIT %s FOR UPDATE SKIP LOCKED""", (now, BATCH)).fetchall()
-            timeout = context.sql_timeout_ms
-            for row in rows:
-                context.check()
-                # Finish a committed prefix instead of rolling all 32 writes
-                # back at the deadline. Reserve commit + outer checkpoint time.
-                allowance = float(getattr(context, "remaining_seconds", 6.))-2.2
-                if allowance < .2:
-                    deferred = True
-                    break
-                smaller = max(1, min(timeout, int(allowance*1000)))
-                if smaller < timeout:
-                    c.execute("SELECT set_config('statement_timeout',%s,true)", (str(smaller),))
-                    timeout = smaller
-                    if float(getattr(context, "remaining_seconds", 6.)) <= 2.2:
-                        deferred = True
-                        break
-                outcome = resolve_forecast(row, {} if now > row["expires_at"] else self._quote(row, now), now=now)
-                scanned += 1
-                if outcome is None:
-                    continue
-                c.execute("UPDATE learning_forecasts SET status=%s,outcome=%s::jsonb,updated_at=now(),learned_at=%s WHERE id=%s AND status='PENDING'",
-                          (outcome["status"], _json(outcome), now if outcome["status"] == "EXCLUDED" else None, row["id"]))
-                resolved += outcome["status"] == "READY"
-                excluded += outcome["status"] == "EXCLUDED"
-        cursor = dict(cursor, resolved=int(cursor.get("resolved") or 0)+resolved,
-                      excluded=int(cursor.get("excluded") or 0)+excluded)
+        """Resolve a bounded due-forecast prefix without holding DB locks across quote I/O."""
+        now=clock()
+        resolved=excluded=scanned=0
+        deferred=False
+        # The durable learning_outcomes lease already serializes this consumer.
+        # Read immutable forecast evidence in a short transaction, then release
+        # DB locks before any market/quote adapter work.
+        with transaction(self.connect,context) as c:
+            rows=c.execute("""SELECT id,entity_key,decision_at,due_at,expires_at,asset,horizon,evidence
+                FROM learning_forecasts
+                WHERE status='PENDING' AND due_at<=%s
+                ORDER BY due_at,id
+                LIMIT %s""",(now,OUTCOME_BATCH)).fetchall()
+        updates=[]
+        for row in rows:
+            context.check()
+            # Reserve a short write/checkpoint tail. Quote acquisition is outside
+            # the database transaction and may consume most of the turn.
+            allowance=float(getattr(context,"remaining_seconds",6.))-1.5
+            if allowance<.25:
+                deferred=True
+                break
+            quote={} if now>row["expires_at"] else self._quote(row,now)
+            context.check()
+            outcome=resolve_forecast(row,quote,now=now)
+            scanned+=1
+            if outcome is not None:
+                updates.append((row,outcome))
+        if updates:
+            with transaction(self.connect,context) as c:
+                for row,outcome in updates:
+                    context.check()
+                    changed=c.execute("""UPDATE learning_forecasts
+                        SET status=%s,outcome=%s::jsonb,updated_at=now(),learned_at=%s
+                        WHERE id=%s AND status='PENDING'
+                        RETURNING id""",
+                        (outcome["status"],_json(outcome),
+                         now if outcome["status"]=="EXCLUDED" else None,row["id"])).fetchone()
+                    if not changed:
+                        continue
+                    resolved+=outcome["status"]=="READY"
+                    excluded+=outcome["status"]=="EXCLUDED"
+        cursor=dict(cursor,resolved=int(cursor.get("resolved") or 0)+resolved,
+                    excluded=int(cursor.get("excluded") or 0)+excluded)
         with self._lock:
-            self._stats.update(resolved_forecasts=cursor["resolved"], excluded_forecasts=cursor["excluded"])
-        status = ("PROGRESS" if resolved+excluded else "DEFERRED_OUTCOME_BUDGET") if deferred else (
-            "PROGRESS" if len(rows) == BATCH and resolved+excluded else "OK")
-        return {"status": status, "resolved": resolved, "excluded": excluded, "scanned": scanned,
-                "remaining_selected": len(rows)-scanned, "reason": "CHECKPOINT_TIME_RESERVED" if deferred else None}, cursor
+            self._stats.update(resolved_forecasts=cursor["resolved"],
+                               excluded_forecasts=cursor["excluded"])
+        status=("PROGRESS" if resolved+excluded else "DEFERRED_OUTCOME_BUDGET") if deferred else (
+            "PROGRESS" if len(rows)==OUTCOME_BATCH and resolved+excluded else "OK")
+        return {"status":status,"resolved":resolved,"excluded":excluded,"scanned":scanned,
+                "selected":len(rows),"remaining_selected":len(rows)-scanned,
+                "reason":"CHECKPOINT_TIME_RESERVED" if deferred else None},cursor
 
     def _publish_candidate_snapshot(self, snapshot):
         """A delayed phase must not replace advice published by another job."""
