@@ -18822,26 +18822,15 @@ def _v90r24_prime_portfolio_snapshot():
 # VERITAS V90 STARTUP READINESS R41
 def _v90r41_prime_startup_state(canonical_state=None):
     global _BOOTSTRAP_READY
-    state=VSG.prime_live_state_with_assets(
-        _STARTUP_GATE,canonical_portfolios=V90_CANONICAL_PORTFOLIOS,
-        display_assets=DISPLAY_ASSETS,horizons=HORIZONS,canonical_state=canonical_state,
-        ensure_canonical=_v90r24_ensure_canonical_portfolios,
-        portfolio_refresh=_v90r25_portfolios_refresh,
-        trade_refresh=lambda:_v90r25_trades_fast(100),
-        market_cycle=fresh_cycle_snapshot,interval=INTERVAL,emit=emit)
-    _BOOTSTRAP_READY=bool(state.get('ok'))
-    return state
-
-
+    state=VSG.prime_live_state_with_assets(_STARTUP_GATE,canonical_portfolios=V90_CANONICAL_PORTFOLIOS,
+        display_assets=DISPLAY_ASSETS,horizons=HORIZONS,canonical_state=canonical_state,ensure_canonical=_v90r24_ensure_canonical_portfolios,
+        portfolio_refresh=_v90r25_portfolios_refresh,trade_refresh=lambda:_v90r25_trades_fast(100),market_cycle=fresh_cycle_snapshot,interval=INTERVAL,emit=emit)
+    _BOOTSTRAP_READY=bool(state.get('ok')); return state
 def _v90r41_readiness_retry_loop():
     deadline=time.time()+120.0
-    while not _STARTUP_GATE.snapshot().get('ok') and time.time()<deadline:
-        time.sleep(2.0)
-        _v90r41_prime_startup_state()
+    while not _STARTUP_GATE.snapshot().get('ok') and time.time()<deadline: time.sleep(2.0); _v90r41_prime_startup_state()
     state=_STARTUP_GATE.snapshot()
     if not state.get('ok'): emit('v90_startup_readiness_deferred',pending_checks=state.get('pending_checks'))
-
-
 def _v90r41_background_storage_audit():
     try: _v90_storage_audit()
     except Exception as ex: emit('v90_storage_audit_error',phase='background_startup',error_type=type(ex).__name__)
