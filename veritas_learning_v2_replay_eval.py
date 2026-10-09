@@ -17,7 +17,7 @@ import veritas_learning_v2_replay as REPLAY
 import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
 
-VERSION="LEARNING_V2_REPLAY_EVAL_V1"
+VERSION="LEARNING_V2_REPLAY_EVAL_V2_EVENT_INDEPENDENCE"
 MAX_TRADES_PER_RUN=4
 MAX_HOLD_SECONDS=86400
 KINDS=("STOP_GEOMETRY","EXIT_CAPTURE")
@@ -70,6 +70,7 @@ def ensure_schema(c):
     c.execute("""CREATE TABLE IF NOT EXISTS learning_v2_replay_receipts(
         candidate_id TEXT NOT NULL,
         trade_id TEXT NOT NULL,
+        event_id TEXT,
         kind TEXT NOT NULL,
         trade_closed_at TIMESTAMPTZ NOT NULL,
         status TEXT NOT NULL,
@@ -81,8 +82,12 @@ def ensure_schema(c):
         observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY(candidate_id,trade_id)
     )""")
+    c.execute("ALTER TABLE learning_v2_replay_receipts ADD COLUMN IF NOT EXISTS event_id TEXT")
     c.execute("""CREATE INDEX IF NOT EXISTS learning_v2_replay_candidate
                  ON learning_v2_replay_receipts(candidate_id,trade_closed_at)""")
+    c.execute("""CREATE UNIQUE INDEX IF NOT EXISTS learning_v2_replay_candidate_event
+                 ON learning_v2_replay_receipts(candidate_id,event_id)
+                 WHERE event_id IS NOT NULL AND event_id<>''""")
 
 
 def _candidate(c):
@@ -112,41 +117,51 @@ def _trade_rows(c,candidate):
     contract=str(scope.get("contract_id") or "")
     regime=str(scope.get("regime") or "")
     return [dict(x) for x in c.execute("""
-      SELECT e.trade_id,e.closed_at,e.asset,e.direction,e.horizon,e.regime,e.setup_family,
-             t.opened_at,t.avg_entry_price,t.status AS trade_status,
-             t.payload->'entry_event_snapshot' AS entry_event_snapshot,
-             t.payload->'entry_execution_model' AS entry_execution_model,
-             t.payload->'price_source_lock' AS price_source_lock,
-             t.payload->'entry_execution_source_identity' AS entry_execution_source_identity,
-             t.payload->>'strategy_policy_hash' AS strategy_policy_hash,
-             t.payload->>'initial_stop_price' AS initial_stop_price,
-             t.payload->>'entry_atr' AS entry_atr,
-             COALESCE(o.entry_order_count,0) AS entry_order_count
-      FROM v90_learning_episodes e
-      JOIN paper_trades t ON t.trade_id=e.trade_id
-      LEFT JOIN (
-        SELECT trade_id,COUNT(*) AS entry_order_count
-        FROM paper_orders WHERE side IN ('BUY','SELL_SHORT')
-        GROUP BY trade_id
-      ) o ON o.trade_id=t.trade_id
-      WHERE e.learning_eligible=TRUE
-        AND e.asset=%s AND e.horizon=%s
-        AND e.closed_at>%s
-        AND t.opened_at>%s
-        AND t.opened_at IS NOT NULL AND e.closed_at IS NOT NULL
-        AND e.closed_at-t.opened_at<=interval '24 hours'
-        AND COALESCE(e.regime,'')=%s
-        AND COALESCE(t.payload->>'strategy_policy_hash','')=%s
-        AND COALESCE(t.payload#>>'{price_source_lock,key}',
-                     t.payload#>>'{entry_execution_source_identity,key}','')=%s
-        AND COALESCE(t.payload#>>'{price_source_lock,contract_id}',
-                     t.payload#>>'{entry_execution_source_identity,contract_id}','')=%s
-        AND COALESCE(o.entry_order_count,0)=1
+      WITH eligible AS (
+        SELECT e.trade_id,e.closed_at,e.asset,e.direction,e.horizon,e.regime,e.setup_family,
+               t.opened_at,t.avg_entry_price,t.status AS trade_status,
+               t.payload#>>'{entry_event_snapshot,event_id}' AS event_id,
+               t.payload->'entry_event_snapshot' AS entry_event_snapshot,
+               t.payload->'entry_execution_model' AS entry_execution_model,
+               t.payload->'price_source_lock' AS price_source_lock,
+               t.payload->'entry_execution_source_identity' AS entry_execution_source_identity,
+               t.payload->>'strategy_policy_hash' AS strategy_policy_hash,
+               t.payload->>'initial_stop_price' AS initial_stop_price,
+               t.payload->>'entry_atr' AS entry_atr,
+               COALESCE(o.entry_order_count,0) AS entry_order_count,
+               ROW_NUMBER() OVER (
+                 PARTITION BY t.payload#>>'{entry_event_snapshot,event_id}'
+                 ORDER BY e.closed_at ASC,e.trade_id ASC
+               ) AS event_rank
+        FROM v90_learning_episodes e
+        JOIN paper_trades t ON t.trade_id=e.trade_id
+        LEFT JOIN (
+          SELECT trade_id,COUNT(*) AS entry_order_count
+          FROM paper_orders WHERE side IN ('BUY','SELL_SHORT')
+          GROUP BY trade_id
+        ) o ON o.trade_id=t.trade_id
+        WHERE (e.learning_eligible=TRUE
+               OR COALESCE((e.payload->>'outcome_learning_eligible')::boolean,FALSE)=TRUE)
+          AND e.asset=%s AND e.horizon=%s
+          AND e.closed_at>%s AND t.opened_at>%s
+          AND t.opened_at IS NOT NULL AND e.closed_at IS NOT NULL
+          AND e.closed_at-t.opened_at<=interval '24 hours'
+          AND COALESCE(e.regime,'')=%s
+          AND COALESCE(t.payload->>'strategy_policy_hash','')=%s
+          AND COALESCE(t.payload#>>'{price_source_lock,key}',
+                       t.payload#>>'{entry_execution_source_identity,key}','')=%s
+          AND COALESCE(t.payload#>>'{price_source_lock,contract_id}',
+                       t.payload#>>'{entry_execution_source_identity,contract_id}','')=%s
+          AND NULLIF(t.payload#>>'{entry_event_snapshot,event_id}','') IS NOT NULL
+          AND COALESCE(o.entry_order_count,0)=1
+      )
+      SELECT * FROM eligible q
+      WHERE q.event_rank=1
         AND NOT EXISTS (
           SELECT 1 FROM learning_v2_replay_receipts r
-          WHERE r.candidate_id=%s AND r.trade_id=e.trade_id
+          WHERE r.candidate_id=%s AND r.event_id=q.event_id
         )
-      ORDER BY e.closed_at ASC
+      ORDER BY q.closed_at ASC
       LIMIT %s
     """,(scope.get("asset"),scope.get("horizon"),candidate["registered_at"],candidate["registered_at"],
           regime,policy,source,contract,candidate["candidate_id"],MAX_TRADES_PER_RUN)).fetchall()]
@@ -283,7 +298,8 @@ def evaluate_trade(candidate,row,cached_bars):
     path_digest=_digest([{k:b.get(k) for k in ("opened_at","closed_at","open","high","low","close",
                                                 "source_key","contract_id")} for b in bars])
     payload={"version":VERSION,"candidate_id":candidate.get("candidate_id"),
-             "trade_id":row.get("trade_id"),"kind":kind,"asset":row.get("asset"),
+             "trade_id":row.get("trade_id"),"event_id":row.get("event_id"),
+             "kind":kind,"asset":row.get("asset"),
              "horizon":row.get("horizon"),"direction":direction,"path_timeframe":path_tf,
              "entry_price":entry,"opened_at":opened.isoformat(),"closed_at":closed.isoformat(),
              "source_identity":identity,"geometry":geometry,"baseline":baseline,"candidate":challenger,
@@ -348,11 +364,11 @@ def process(pg_connect,cached_bars,*,now=None,context=None):
                     "production_influence":False}
                 evidence_hash=result.get("evidence_hash") or _digest(payload)
                 conn.execute("""INSERT INTO learning_v2_replay_receipts(
-                    candidate_id,trade_id,kind,trade_closed_at,status,baseline_net,
+                    candidate_id,trade_id,event_id,kind,trade_closed_at,status,baseline_net,
                     candidate_net,delta_net,evidence_hash,payload,observed_at)
-                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+                    VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
                     ON CONFLICT(candidate_id,trade_id) DO NOTHING""",
-                    (candidate["candidate_id"],row["trade_id"],candidate["kind"],row["closed_at"],
+                    (candidate["candidate_id"],row["trade_id"],row.get("event_id"),candidate["kind"],row["closed_at"],
                      result["status"],result.get("baseline_net"),result.get("candidate_net"),
                      result.get("delta_net"),evidence_hash,_json(payload),clock))
             stats=_aggregate(conn,candidate["candidate_id"])
