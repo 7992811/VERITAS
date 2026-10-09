@@ -16506,7 +16506,7 @@ def _v90r25_portfolios_refresh():
         live=dict((last_cycle or {}).get('portfolio_autopilot') or {}); sigs=list((last_cycle or {}).get('summary') or [])
     if VPRM.memory_complete(live,V90_CANONICAL_PORTFOLIOS):
         out=VP.VCP.decorate_report(VPRM.revalue_report(VTV.enrich_positions(live,pg_connect),required_names=V90_CANONICAL_PORTFOLIOS)); out['api_source']='live_memory'
-        if pg_enabled():
+        if pg_enabled() and VCD.enabled():
             with pg_connect() as c, c.transaction():
                 VPRM.begin_read_snapshot(c)
                 currency_checked_at=datetime.now(timezone.utc).isoformat()
@@ -16542,7 +16542,7 @@ def _v90r25_portfolios_refresh():
                          ORDER BY pp.portfolio_name,pp.asset""",(names,)).fetchall()
         stats=c.execute("""SELECT portfolio_name,COUNT(*) FILTER(WHERE status='CLOSED') AS closed_trades,COUNT(*) FILTER(WHERE status='CLOSED' AND profitable) AS wins,COALESCE(SUM(net_pnl_rub) FILTER(WHERE status='CLOSED'),0) AS closed_pnl, """ + CLOSED_METRICS_SQL + """ FROM paper_trades WHERE portfolio_name=ANY(%s) GROUP BY portfolio_name""",(names,)).fetchall()
         accounts=load_position_accounts(c,pos,VTV.VPP.load_accounts)
-        currency_live=VCD.read_live_currency_on(c,checked_at=snapshot_at)
+        currency_live=VCD.read_live_currency_on(c,checked_at=snapshot_at) if VCD.enabled() else {'bound':False,'trades':[]}
     bm={r['name']:dict(r) for r in base}; nm={r['portfolio_name']:dict(r) for r in nav}; sm={r['portfolio_name']:dict(r) for r in stats}; pm={}
     def _n(v,d=None):
         try:
@@ -16592,15 +16592,13 @@ def _v90r25_portfolios_refresh():
 
 def _v90r25_trades_fast(limit=80):
     from veritas_trade_journal_read_model import JOURNAL_PAYLOAD_SQL
-    import veritas_portfolio_read_model as VPRM
     import veritas_currency_dashboard as VCD
     limit=max(20,min(200,int(limit or 80)))
     if not pg_enabled():
         return {'status':'UNAVAILABLE','trades':[]}
     try:
-        with pg_connect() as c, c.transaction():
-            VPRM.begin_read_snapshot(c)
-            currency_live=VCD.read_live_currency_on(c,checked_at=datetime.now(timezone.utc))
+        with pg_connect() as c:
+            currency_live=VCD.read_live_currency_on(c,checked_at=datetime.now(timezone.utc)) if VCD.enabled() else {'bound':False,'trades':[]}
             paper_limit=min(600,limit*3) if currency_live.get('bound') is True else limit
             rows=c.execute(f"""WITH recent AS (SELECT trade_id,portfolio_name,asset,direction,opened_at,closed_at,
                                      avg_entry_price,avg_exit_price,gross_pnl_rub,fees_rub,
