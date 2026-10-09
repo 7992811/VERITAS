@@ -254,3 +254,28 @@ witness still fails closed.
 
 The change only affects evidence quality for future trades. Existing V1 paths are
 not upgraded or backfilled.
+
+
+## Observation sidecar V2 (v91.8.35)
+
+The sidecar now samples only positions with a causal entry seed. A carried
+position whose exact entry prefix was never observed cannot become path-eligible,
+so repeatedly writing later marks would consume database/CPU budget without
+repairing the missing evidence.
+
+A previously recorded canonical observation prefix may be handed off to the
+sidecar only when it proves:
+
+- the witness started at the actual entry;
+- no invalid observations have occurred;
+- no observation gap has already occurred.
+
+A missing cached quote is **not** written as an invalid observation. It produces
+no evidence. If the outage lasts too long, the next real observation proves the
+cadence/source gap through the existing path rules. This keeps the protocol
+fail-closed without permanently poisoning a valid trade because of one transient
+cache miss.
+
+Sidecar telemetry separates seeded, handed-off, unseeded carried, irrecoverable
+seeded and actually sampled positions. None of these fields has trading
+authority.
