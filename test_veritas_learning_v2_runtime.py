@@ -59,6 +59,10 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertFalse(events[-1][1]["production_influence"])
         self.assertIn("zero_candidate_reason",events[-1][1])
         self.assertIn("known_blockers",events[-1][1])
+        self.assertIn("outcome_evidence_trades",events[-1][1])
+        self.assertIn("path_evidence_trades",events[-1][1])
+        self.assertIn("stop_replay_ready",events[-1][1])
+        self.assertIn("exit_replay_ready",events[-1][1])
         snap=app.snapshot()["learning_v2"]
         self.assertFalse(snap["automatic_production_promotion"])
         self.assertEqual(snap["registry"],registry)
