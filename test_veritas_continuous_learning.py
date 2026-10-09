@@ -135,6 +135,32 @@ class ProducerContracts(unittest.TestCase):
         self.assertEqual(app.boot_phase, 1)
         self.assertEqual(result["status"], "PROGRESS")
 
+    def test_bootstrap_knowledge_failure_does_not_advance_phase(self):
+        app=C.ContinuousLearning(namespace(lambda: None))
+        app.boot_phase=3
+        with patch.object(C.KNOWLEDGE,"ensure_schema",side_effect=RuntimeError("slow schema")):
+            with self.assertRaises(RuntimeError):
+                app.bootstrap()
+        self.assertEqual(app.boot_phase,3)
+        with patch.object(C.KNOWLEDGE,"ensure_schema") as ensure:
+            result=app.bootstrap()
+        ensure.assert_called_once()
+        self.assertEqual(app.boot_phase,4)
+        self.assertEqual(result["stage"],"KNOWLEDGE_SCHEMA")
+
+    def test_bootstrap_knowledge_restore_is_its_own_retryable_phase(self):
+        app=C.ContinuousLearning(namespace(lambda: None))
+        app.boot_phase=4
+        with patch.object(C.KNOWLEDGE,"restore",side_effect=RuntimeError("slow restore")):
+            with self.assertRaises(RuntimeError):
+                app.bootstrap()
+        self.assertEqual(app.boot_phase,4)
+        with patch.object(C.KNOWLEDGE,"restore") as restore:
+            result=app.bootstrap()
+        restore.assert_called_once()
+        self.assertEqual(app.boot_phase,5)
+        self.assertEqual(result["stage"],"KNOWLEDGE_RESTORE")
+
     def test_failed_operation_never_publishes_a_new_cursor(self):
         app = C.ContinuousLearning(namespace(lambda: None)); app.ready = True
         lease = {"cursor": {"last_id": 7}}
@@ -878,7 +904,7 @@ class ContinuousPipelineSQLTests(unittest.TestCase):
                 status text,opened_at timestamptz,closed_at timestamptz,gross_pnl_rub float8,fees_rub float8,
                 funding_rub float8,net_pnl_rub float8,portfolio_name text,setup text,max_fraction float8,
                 avg_entry_price float8,avg_exit_price float8,payload jsonb)""")
-        for _ in range(5):
+        for _ in range(7):
             self.ns["_v90_background_maintenance"].reset()
             self.app.bootstrap()
         self.assertTrue(self.app.ready)
@@ -951,7 +977,7 @@ class ContinuousPipelineSQLTests(unittest.TestCase):
         restored_ns = namespace(self.connect)
         restored_ns["VP"] = self.ns["VP"]
         restored = C.ContinuousLearning(restored_ns)
-        for _ in range(5):
+        for _ in range(7):
             restored.ns["_v90_background_maintenance"].reset()
             restored.bootstrap()
         self.assertTrue(restored.ready)
