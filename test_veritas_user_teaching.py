@@ -31,6 +31,18 @@ class OwnerTeachingProvenanceTests(unittest.TestCase):
         self.assertGreater(CTC.STRUCTURAL_ENTRY_POLICY["atr_period"], 0)
         self.assertEqual(len(UT.policy_snapshot()["portfolios"]), 5)
 
+    def test_later_observation_refinement_does_not_rewrite_acceleration_snapshot(self):
+        acceleration=UT.acceleration_policy_snapshot()
+        self.assertNotIn("execution_efficiency",acceleration["execution_policy"])
+        self.assertNotIn("fast_exit_held_horizons",
+                         acceleration["execution_policy"]["reversal_exit"])
+        current=CTC.TREND_ACCELERATION_POLICY
+        self.assertIn("execution_efficiency",current)
+        self.assertIn("fast_exit_held_horizons",current["reversal_exit"])
+        refinement=UT.observation_integrity_policy_snapshot()
+        self.assertEqual(refinement["parent_teaching_id"],UT.ACCELERATION_TEACHING_ID)
+        self.assertEqual(refinement["runtime_consistency"]["status"],"OK")
+
     def test_idempotent_seed_uses_existing_ledger_key_and_original_time(self):
         ledger, calls = {}, []
 
