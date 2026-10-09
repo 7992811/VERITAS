@@ -196,10 +196,27 @@ def sample_once(pg_connect,quote_selector,*,now=None):
                 quote=quote_selector(work,now=clock) or {}
             except Exception:
                 quote={}
-            if quote:
-                quotes+=1
-            else:
+            if not quote:
+                # Cache warm-up or a temporarily absent pinned mark is not itself
+                # proof of corrupt market evidence. Preserve the last committed
+                # witness unchanged. The next valid sample will measure the real
+                # check gap and fail closed only if it exceeded the 45s budget.
                 missing+=1
+                witness=old if isinstance(old,dict) else None
+                if isinstance(witness,dict):
+                    invalid+=int(bool(witness.get("invalid_observation_count")))
+                    if witness.get("started_at_entry") is True:
+                        seeded+=1
+                    else:
+                        unseeded+=1
+                    if (witness.get("coverage_status")=="OBSERVED"
+                            and not witness.get("invalid_observation_count")
+                            and not witness.get("gap_count")):
+                        observed+=1
+                else:
+                    unseeded+=1
+                continue
+            quotes+=1
             witness=PATH.observe(work,quote,clock,lane="OBSERVATION_SIDECAR")
             invalid+=int(bool(witness.get("invalid_observation_count")))
             if witness.get("started_at_entry") is True:

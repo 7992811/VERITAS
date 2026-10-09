@@ -44,3 +44,16 @@ least once per minute.
 Closed-trade sidecar rows are removed in bounded batches of at most 32 once the
 corresponding active paper position is durably absent. Cleanup does not hold the
 paper-book lock and cannot delete evidence for an active position.
+
+
+## Cold-cache semantics (v91.8.36)
+
+A temporarily absent cached pinned quote does not mutate a previously committed
+witness. In particular, service startup is allowed to warm the quote cache
+without incrementing invalid_observation_count.
+
+This does not relax continuity. The next valid sample compares its check time
+with the last committed valid check. If that real gap exceeds the existing
+45-second limit, the path still becomes permanently incomplete. A stale,
+mismatched, malformed or wrong-source quote is still passed to the strict path
+validator and remains invalid evidence.
