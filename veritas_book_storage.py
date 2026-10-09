@@ -11,6 +11,7 @@ except ImportError:  # Non-PostgreSQL fixtures must retain their existing behavi
 
 
 SET_LZ4_SQL = "SET LOCAL default_toast_compression = 'lz4'"
+SET_SESSION_LZ4_SQL = "SET default_toast_compression = 'lz4'"
 _METADATA_CACHE_TTL_SECONDS = 300.0
 _metadata_cache_lock = threading.Lock()
 _metadata_cache = {'at': 0.0, 'value': None}
@@ -94,6 +95,16 @@ def prepare(c, *, requested=None):
     keys = ('current_method','lz4_supported','positions_compression','positions_storage',
             'trades_compression','trades_storage')
     compact={key:metadata.get(key) for key in keys}
+    # Compression policy is connection/session metadata, not financial state.
+    # Apply it before the process-wide book lock so the protected transaction
+    # does not spend network latency on a static SET LOCAL.
+    prior=_policy(compact.get('current_method'),('pglz','lz4'))
+    columns_ok=all(_policy(compact.get(prefix+'_compression'),('default','pglz','lz4'))=='default'
+                   and _policy(compact.get(prefix+'_storage'),('x','m','e','p')) in ('x','m')
+                   for prefix in ('positions','trades'))
+    if prior=='pglz' and compact.get('lz4_supported') is True and columns_ok:
+        c.execute(SET_SESSION_LZ4_SQL)
+        compact['current_method']='lz4'
     with _metadata_cache_lock:
         _metadata_cache['at']=time.monotonic()
         _metadata_cache['value']=dict(compact)
