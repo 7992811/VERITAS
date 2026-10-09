@@ -112,7 +112,7 @@ class LearningV2RuntimeTests(unittest.TestCase):
     def test_periodic_job_is_registered_with_bounded_budget(self):
         app=C.ContinuousLearning(namespace(lambda: None))
         lane=app.lane
-        self.assertEqual(C.LEARNING_V2_INPUT_LIMIT,128)
+        self.assertEqual(C.LEARNING_V2_INPUT_LIMIT,64)
         self.assertIn("learning_v2_shadow",lane.callbacks)
         self.assertIn("learning_v2_replay",lane.callbacks)
         self.assertEqual(lane.options["learning_v2_shadow"]["max_seconds"],5)
