@@ -40,6 +40,7 @@ import veritas_cycle_schedule as VCS
 import veritas_history_diagnostics as VHD
 import veritas_signal_publication as VSP
 import veritas_user_teaching as VUT
+import veritas_startup_guard as VSG
 VERSION = VR.PRODUCT_VERSION
 try:
     import veritas_signal_core as V70
@@ -71,6 +72,7 @@ HEAVY_LEARNING_INTERVAL_SECONDS = max(600, int(os.getenv('VERITAS_HEAVY_LEARNING
 HEAVY_LEARNING_START_DELAY_SECONDS = max(15, int(os.getenv('VERITAS_HEAVY_LEARNING_START_DELAY_SECONDS','45')))
 FAST_LOOP_TARGET_SECONDS = max(10.0, float(os.getenv('VERITAS_FAST_LOOP_TARGET_SECONDS','30')))
 _BOOTSTRAP_READY = False
+_STARTUP_GATE = VSG.ReadinessGate()
 DB_PATH = os.getenv('VERITAS_LEDGER_PATH', '/tmp/veritas_decisions.sqlite3')
 _V90_DB_ENV_KEYS=('DATABASE_URL','VERITAS_DATABASE_URL','POSTGRES_URL','POSTGRESQL_URL','POSTGRES_INTERNAL_URL','RENDER_DATABASE_URL')
 DATABASE_URL = next((os.getenv(k,'').strip() for k in _V90_DB_ENV_KEYS if os.getenv(k,'').strip()), '')
@@ -16680,6 +16682,7 @@ def _v90r23_trade_report_fast():
 def _v90r26_dashboard_bootstrap(signals_only=False):
     """One fast UI payload: signals, five portfolios, open positions and recent closed trades."""
     cyc=fresh_cycle_snapshot()
+    startup=_STARTUP_GATE.snapshot()
     publication={'signals_updated_at':cyc.get('signals_updated_at'),'cycle_in_progress':cyc.get('cycle_in_progress',False)}
     from veritas_dashboard_projection import signal_display
     signals=[signal_display(z) for z in (cyc.get('summary') or []) if str(z.get('asset') or '')!='NDX']
@@ -16688,7 +16691,7 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
         # Omit those sections (never send empty authoritative books on this path).
         return {
             'status':'OK','version':VERSION,'at':cyc.get('at'),**publication,
-            'health':{'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled()),'release':VR.snapshot()},
+            'health':{'ok':startup.get('ok') is True,'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled()),'startup':startup,'release':VR.snapshot()},
             'signals':signals,'signal_count':len(signals),
             'data_quality_summary':{
                 'cells':len(signals),'expected_cells':len(DISPLAY_ASSETS)*len(HORIZONS),
@@ -16717,7 +16720,7 @@ def _v90r26_dashboard_bootstrap(signals_only=False):
     wins_total=sum(int(p.get('wins') or 0) for p in ps)
     return {
       'status':'OK','version':VERSION,'at':cyc.get('at'),**publication,
-      'health':{'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled()),'release':VR.snapshot()},
+      'health':{'ok':startup.get('ok') is True,'bootstrap_ready':bool(_BOOTSTRAP_READY),'storage':bool(pg_enabled()),'startup':startup,'release':VR.snapshot()},
       'signals':signals,'signal_count':len(signals),
       'portfolios':ps,'portfolio_count':len(ps),
       'positions':positions,'open_position_count':len(positions),
@@ -16762,7 +16765,9 @@ class H(BaseHTTPRequestHandler):
         try:
             if not _BOOTSTRAP_READY and self.path.startswith('/api/v1/'):
                 from veritas_portfolio_read_model import starting_response
-                self.reply(starting_response(VERSION),503); return
+                _starting=starting_response(VERSION); _gate=globals().get('_STARTUP_GATE')
+                if _gate is not None: _starting['readiness']=_gate.snapshot()
+                self.reply(_starting,503); return
             if self.path.startswith('/internal/v90/database-lease'):
                 import hmac
                 expected=os.getenv('VERITAS_V90_BRIDGE_TOKEN','').strip()
@@ -16776,13 +16781,15 @@ class H(BaseHTTPRequestHandler):
                                 'storage_generation':'9.0','database_url':DATABASE_URL},200)
             elif self.path.split('?',1)[0]=='/readyz':
                 from veritas_operational_status import readiness
-                state=readiness(_BOOTSTRAP_READY,bool(DATABASE_URL),_v90_pg_health_snapshot())
-                self.reply({'version':VERSION,**state,'release':VR.snapshot()},200 if state['ok'] else 503)
+                _gate=globals().get('_STARTUP_GATE'); startup=_gate.snapshot() if _gate is not None else {'ok':bool(_BOOTSTRAP_READY),'phase':'READY' if _BOOTSTRAP_READY else 'STARTING'}
+                state=readiness(bool(_BOOTSTRAP_READY and startup.get('ok')),bool(globals().get('DATABASE_URL')),_v90_pg_health_snapshot())
+                self.reply({'version':VERSION,**state,'startup':startup,'release':VR.snapshot()},200 if state['ok'] else 503)
             elif self.path.startswith('/healthz'):
+                _gate=globals().get('_STARTUP_GATE'); startup=_gate.snapshot() if _gate is not None else {'ok':bool(_BOOTSTRAP_READY),'phase':'READY' if _BOOTSTRAP_READY else 'STARTING'}
                 self.reply({'ok':True,'scope':'PROCESS_LIVENESS','version':VERSION,'role':SERVICE_ROLE,
-                            'bootstrap_ready':bool(_BOOTSTRAP_READY),
-                            'phase':'READY' if _BOOTSTRAP_READY else 'STARTING',
-                            'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1),
+                            'bootstrap_ready':bool(_BOOTSTRAP_READY and startup.get('ok')),
+                            'phase':'READY' if _BOOTSTRAP_READY and startup.get('ok') else startup.get('phase','STARTING'),
+                            'startup':startup,'rss_mb':rss_mb(),'uptime_s':round(time.time()-SERVICE_STARTED_AT,1),
                             'release':VR.snapshot()})
             elif self.path.startswith('/api/v1/presence'):
                 tok=self.headers.get('X-Veritas-Visitor',''); record_presence(tok,self.path); self.reply({'version':VERSION,**user_metrics()})
@@ -18812,6 +18819,23 @@ def _v90r24_prime_portfolio_snapshot():
              error=f'{type(ex).__name__}: {ex}')
         return {'status':'ERROR','count':0}
 
+# VERITAS V90 STARTUP READINESS R41
+def _v90r41_prime_startup_state(canonical_state=None):
+    global _BOOTSTRAP_READY
+    state=VSG.prime_live_state_with_assets(_STARTUP_GATE,canonical_portfolios=V90_CANONICAL_PORTFOLIOS,
+        display_assets=DISPLAY_ASSETS,horizons=HORIZONS,canonical_state=canonical_state,ensure_canonical=_v90r24_ensure_canonical_portfolios,
+        portfolio_refresh=_v90r25_portfolios_refresh,trade_refresh=lambda:_v90r25_trades_fast(100),market_cycle=fresh_cycle_snapshot,interval=INTERVAL,emit=emit)
+    _BOOTSTRAP_READY=bool(state.get('ok')); return state
+def _v90r41_readiness_retry_loop():
+    deadline=time.time()+120.0
+    while not _STARTUP_GATE.snapshot().get('ok') and time.time()<deadline: time.sleep(2.0); _v90r41_prime_startup_state()
+    state=_STARTUP_GATE.snapshot()
+    if not state.get('ok'): emit('v90_startup_readiness_deferred',pending_checks=state.get('pending_checks'))
+def _v90r41_background_storage_audit():
+    try: _v90_storage_audit()
+    except Exception as ex: emit('v90_storage_audit_error',phase='background_startup',error_type=type(ex).__name__)
+
+
 # VERITAS V90 EXECUTION SAFETY R40
 # One final gate sits after every setup-specific trade-plan branch. Research
 # signals remain visible even when the trade is blocked.
@@ -19049,8 +19073,7 @@ def main():
     server_thread.start()
     emit('http_bound_early', port=int(os.getenv('PORT','10000')),
          bootstrap_ready=False, startup_mode='TWO_PHASE_READINESS')
-    import veritas_startup_guard as VSG
-    VSG.start_watchdog(lambda: _BOOTSTRAP_READY, emit, delay_seconds=60)
+    VSG.start_watchdog(lambda: _STARTUP_GATE.snapshot().get('ok') is True, emit, delay_seconds=60)
     # R83: optional read-only broker connection; no token means no thread or RPC.
     VTB.connection.start()
 
@@ -19059,17 +19082,19 @@ def main():
     init_db()
     pg_boot = pg_init()
     v90_migration = v90_migrate_core_data() if pg_boot.get('ok') else {'status':'POSTGRES_REQUIRED','schema':V90_DB_SCHEMA}
+    _db_ready=bool(pg_boot.get('ok') and v90_migration.get('status') in ('READY','OK'))
+    _STARTUP_GATE.mark('database',_db_ready,status=v90_migration.get('status'),
+                       reason=None if _db_ready else 'DATABASE_NOT_READY')
     emit('v90_database_ready', **v90_migration)
     if pg_boot.get('ok'):
         for receipt in VUT.seed_all_user_teachings(pg_event,_read_user_teaching):
             emit('user_teaching_applied',**receipt)
-    if pg_boot.get('ok'):
-        try: _v90_storage_audit()
-        except Exception as _sa_ex:
-            emit('v90_storage_audit_error',phase='startup',error=f'{type(_sa_ex).__name__}: {_sa_ex}')
+    # R41: the storage audit is diagnostic and no longer delays live-state publication.
+    # It starts in the background after the critical bootstrap gate has been evaluated.
     # R16 startup discipline: never block the live market loop on full historical
     # portfolio reports or loss audits. They remain durable in PostgreSQL and are
     # generated on demand / in background maintenance.
+    canonical_state={'status':'UNAVAILABLE','names':[],'count':0,'expected':list(V90_CANONICAL_PORTFOLIOS)}
     if pg_boot.get('ok') and VP is not None:
         try:
             canonical_state=_v90r24_ensure_canonical_portfolios()
@@ -19093,7 +19118,7 @@ def main():
     # Publish the last durable matrix, including the minute lane, on startup.
     import veritas_breakout_runtime as VBR
     VBR.restore_snapshot(globals())
-    _BOOTSTRAP_READY = True
+    _startup_state=_v90r41_prime_startup_state(canonical_state)
     try:
         _boot_ui=_v90r26_dashboard_bootstrap()
         emit('v90_dashboard_bootstrap_selftest',
@@ -19133,6 +19158,12 @@ def main():
         import veritas_structural_lifecycle as VSL
         VBR.start(globals(),entry_pass=lambda rows,clock:VSL.fast_entry_pass(globals(),rows,clock,runtime=True))
     threading.Thread(target=loop, daemon=True).start()
+    if pg_boot.get('ok'):
+        threading.Thread(target=_v90r41_background_storage_audit,daemon=True,
+                         name='veritas-storage-audit').start()
+    if not _BOOTSTRAP_READY:
+        threading.Thread(target=_v90r41_readiness_retry_loop,daemon=True,
+                         name='veritas-startup-readiness').start()
     # R38 always runs: it exits immediately after a healthy write test, but if
     # Postgres is temporarily unavailable/full it waits for the Resume window.
     threading.Thread(target=_v90r38_storage_rescue_loop, daemon=True,
