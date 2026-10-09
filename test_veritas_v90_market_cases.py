@@ -294,9 +294,11 @@ class SignalExecutionSeparationRegressionTests(unittest.TestCase):
             'trend_entry_context':{
                 'status':'OK','local_support':2360.0,'atr':3.0,
                 'event':{'event_id':'OLD_MOEX_BREAKOUT','direction':'LONG',
-                         'stop_price':2350.0}
+                         'stop_price':2350.0,'spent':True,
+                         'spent_reason':'SAME_TF_TARGET_ALREADY_REACHED'}
             },
-            'trade_plan':{'stop_price':2360.0},
+            'trade_plan':{'stop_price':2360.0,
+                          'trade_integrity':{'hard_invalidation':True}},
         }
         event = VTE._signal_continuation_event(
             row, price=2370.6,
@@ -305,6 +307,16 @@ class SignalExecutionSeparationRegressionTests(unittest.TestCase):
         self.assertEqual(event['direction'],'LONG')
         self.assertEqual(event['event_type'],'SIGNAL_CONTINUATION')
         self.assertTrue(event['signal_authoritative'])
+        self.assertEqual(event['parent_event_id'],'OLD_MOEX_BREAKOUT')
+        # The same hard invalidation is authoritative while the parent is still
+        # live; only a consumed target may be replaced by a new setup identity.
+        live_parent=dict(row)
+        live_parent['trend_entry_context']={
+            **row['trend_entry_context'],
+            'event':{**row['trend_entry_context']['event'],'spent':False,'spent_reason':None}}
+        self.assertIsNone(VTE._signal_continuation_event(
+            live_parent, price=2370.6,
+            now=datetime(2026,10,9,19,22,44,tzinfo=timezone.utc)))
         # Execution stays fail-closed elsewhere; this regression only protects
         # the market thesis from being rewritten by a transport/session veto.
         self.assertFalse(VI.execution_eligibility('MOEX', row)['paper_eligible'])
