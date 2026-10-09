@@ -164,6 +164,17 @@ _CANONICAL_HTML = r'''<!doctype html>
 .market-change-strip{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.05)}
 .market-change{border:1px solid rgba(255,255,255,.06);border-radius:999px;padding:3px 7px;font-size:8px;color:#c6d1d9;background:rgba(255,255,255,.012);white-space:nowrap}
 .market-change b{color:#eef3f7}
+
+.market-conclusions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin-top:10px}
+.market-conclusion{border:1px solid rgba(255,255,255,.055);border-radius:9px;padding:8px;background:rgba(255,255,255,.012);min-width:0}
+.market-conclusion-head{display:flex;align-items:center;gap:6px;min-width:0}.market-conclusion-index{font-size:7px;color:var(--muted);border:1px solid rgba(255,255,255,.08);border-radius:999px;padding:1px 4px}.market-conclusion-head b{font-size:10px;line-height:1.2;min-width:0}
+.market-conclusion-fact{font-size:8.5px;line-height:1.4;color:#cbd5dd;margin-top:4px;overflow-wrap:anywhere}
+.market-conclusion-implication{font-size:8px;line-height:1.35;color:var(--muted);margin-top:4px;overflow-wrap:anywhere}
+.market-conclusion-implication b{color:#dfe7ed}
+.opportunity-factors{display:flex;flex-wrap:wrap;gap:3px;margin-top:3px}
+.opportunity-factor{border:1px solid rgba(255,255,255,.055);border-radius:999px;padding:1px 4px;font-size:6.8px;color:#9fadb8;white-space:nowrap}
+.opportunity-score strong{display:block;font-size:7px;color:#cbd6df;margin-bottom:1px;font-weight:650}
+
 .opportunity-list{display:grid;gap:4px}
 .opportunity{display:grid;grid-template-columns:24px minmax(75px,.8fr) minmax(0,1.25fr) auto;gap:6px;align-items:center;border-top:1px solid rgba(255,255,255,.045);padding:6px 0;min-width:0}
 .opportunity:first-child{border-top:0}
@@ -173,7 +184,7 @@ _CANONICAL_HTML = r'''<!doctype html>
 .opportunity-score{text-align:right;white-space:nowrap}.opportunity-score b{font-size:10px}.opportunity-score span{display:block;font-size:7px;color:var(--muted);margin-top:1px}
 .action-center-card .action:first-child{border:1px solid rgba(117,176,216,.22);border-radius:9px;padding:8px;background:rgba(77,129,169,.06)}
 .section-kicker{font-size:8px;color:var(--muted);margin:-2px 0 7px}
-@media(max-width:900px){.market-now-wrap{grid-template-columns:1fr}.market-now-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}.opportunity{grid-template-columns:22px minmax(70px,.75fr) minmax(0,1fr) auto}}
+@media(max-width:900px){.market-now-wrap{grid-template-columns:1fr}.market-now-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}.market-conclusions{grid-template-columns:1fr}.opportunity{grid-template-columns:22px minmax(70px,.75fr) minmax(0,1fr) auto}}
 @media(max-width:620px){.market-now-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.market-state-main{font-size:17px}.opportunity{grid-template-columns:20px minmax(68px,.7fr) minmax(0,1fr)}.opportunity-score{grid-column:3;text-align:left}}
 
 .insight-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}.insight{border:1px solid var(--line);border-radius:8px;padding:7px;min-width:0}.insight h4{margin:0 0 5px;font-size:9px;color:var(--muted);font-weight:500;text-transform:uppercase}.insight div{font-size:9px;line-height:1.6}
@@ -791,15 +802,53 @@ function renderSignals(){
   $('cells').textContent='ДАННЫЕ · '+rows.length+'/'+expectedCells+' · проверено '+verified+' · устарело '+stale;$('cells').className='pill '+(rows.length>=expectedCells&&verified===rows.length?'ok':rows.length?'warn':'bad');
   const updatedAt=d.signals_updated_at||d.at;$('stamp').textContent='ОБНОВЛЕНО · '+(updatedAt?new Date(updatedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',second:'2-digit'}):'—');
 
-  const rank=x=>{const D=dir(x),T=tier(x);if(!['LONG','SHORT'].includes(D))return-999;const superBoost=(T==='SUPER_LONG'||T==='SUPER_SHORT')?5:0;return superBoost+(x.plan_eligible===false?0:2)+4*Number(x.horizon_structure_score||0)+2*Number(x.confidence||0)+Math.min(Number(x.expected_to_stop_ratio||0),3)+.2*Number(x.independent_evidence_families||0)};
-  const selectedKeys=new Set(((st.portfolios&&st.portfolios.portfolios)||[]).flatMap(p=>(p.admission_trace||[]).map(t=>t.asset+'|'+t.horizon)));
-  const ranked=rows.filter(x=>['LONG','SHORT'].includes(dir(x))).sort((a,b)=>
-    (Number(selectedKeys.has(b.asset+'|'+b.horizon))-Number(selectedKeys.has(a.asset+'|'+a.horizon)))||rank(b)-rank(a));
+  const tfWeight={ '1m':.30,'5m':.70,'1h':1.35,'4h':1.80,'1d':2.30,'3d':1.35,'7d':1.10 };
+  const finite=v=>Number.isFinite(Number(v))?Number(v):null;
+  const validSignal=x=>x&&x.source_gate_pass===true&&x.snapshot_stale!==true;
+  const directionWeight=(asset,D,tfs=null)=>{
+    const xs=rows.filter(x=>x.asset===asset&&validSignal(x)&&(!tfs||tfs.includes(x.horizon)));
+    let same=0,opp=0,total=0,sameCount=0,oppCount=0;
+    xs.forEach(x=>{const w=tfWeight[x.horizon]||.5,totalDir=dir(x);total+=w;if(totalDir===D){same+=w;sameCount++}else if(['LONG','SHORT'].includes(totalDir)){opp+=w;oppCount++}});
+    return {same,opp,total,agreement:total?same/total:0,sameCount,oppCount,available:xs.length};
+  };
+  const levelQuality=x=>{
+    const price=finite(x.price),stop=finite(stopOf(x)),target=finite(targetOf(x)),D=dir(x);
+    if(price==null||stop==null||target==null)return 0;
+    if(D==='LONG')return stop<price&&price<target?1:0;
+    if(D==='SHORT')return target<price&&price<stop?1:0;
+    return 0;
+  };
+  const qualityScore=x=>({FRESH_BREAKOUT:1,CONFIRMED_TREND:.92,WAIT_CONFIRMATION:.52,NEUTRAL:.28,INVALIDATED:0}[String(x.entry_quality||'')]??.4);
+  const candidateMetrics=x=>{
+    const D=dir(x),agreement=directionWeight(x.asset,D);
+    const structure=Math.max(0,Math.min(1,finite(x.horizon_structure_score)??0));
+    const confidence=Math.max(0,Math.min(1,finite(x.confidence)??0));
+    const rr=Math.max(0,finite(rrOf(x))??0),rrN=Math.min(rr/3,1);
+    const levels=levelQuality(x);
+    const evidence=Math.min(Math.max(finite(x.independent_evidence_families)??0,0)/5,1);
+    const entryQ=qualityScore(x);
+    const move=Math.abs(finite(planOf(x).expected_move_pct??x.expected_move_pct)??0);
+    const moveN=Math.max(0,Math.min((move-.004)/.011,1));
+    const superN=['SUPER_LONG','SUPER_SHORT'].includes(tier(x))?1:.35;
+    const score=100*(.22*agreement.agreement+.18*structure+.15*rrN+.12*confidence+.10*levels+.08*evidence+.07*entryQ+.05*moveN+.03*superN);
+    return {score:Math.max(0,Math.min(100,score)),agreement,structure,confidence,rr,levels,evidence,entryQ,move,superN};
+  };
+  const marketRank=x=>{
+    if(!validSignal(x)||!['LONG','SHORT'].includes(dir(x)))return-999;
+    return candidateMetrics(x).score;
+  };
+  // Market opportunity ranking is intentionally portfolio-independent.
+  // A position, admission trace or current portfolio exposure cannot improve the market score.
+  const ranked=rows.filter(x=>['LONG','SHORT'].includes(dir(x))&&validSignal(x)).sort((a,b)=>marketRank(b)-marketRank(a));
   const seen=new Set(),best=ranked.filter(x=>{if(seen.has(x.asset))return false;seen.add(x.asset);return true}).slice(0,7);
+  const actionBest=[...best].sort((a,b)=>{
+    const aa=paperStatus(a),bb=paperStatus(b);
+    const actionBoost=s=>s.ready?12:s.short==='позиция'?7:s.short==='проверка'?3:0;
+    return (marketRank(b)+actionBoost(bb))-(marketRank(a)+actionBoost(aa));
+  });
 
-  const coreTfWeight={ '5m':.7,'1h':1.25,'4h':1.75,'1d':2.25,'3d':1.2,'7d':1.0,'1m':.35 };
-  const core=rows.filter(x=>x.source_gate_pass===true&&x.snapshot_stale!==true&&['LONG','SHORT'].includes(dir(x)));
-  const weighted=core.reduce((s,x)=>{const w=coreTfWeight[x.horizon]||.5;return {long:s.long+(dir(x)==='LONG'?w:0),short:s.short+(dir(x)==='SHORT'?w:0),total:s.total+w}}, {long:0,short:0,total:0});
+  const core=rows.filter(x=>validSignal(x)&&['LONG','SHORT'].includes(dir(x)));
+  const weighted=core.reduce((s,x)=>{const w=tfWeight[x.horizon]||.5;return {long:s.long+(dir(x)==='LONG'?w:0),short:s.short+(dir(x)==='SHORT'?w:0),total:s.total+w}}, {long:0,short:0,total:0});
   const balance=weighted.total?(weighted.long-weighted.short)/weighted.total:0;
   const derivedState=balance>.28?'Широкое преимущество покупателей':balance<-.28?'Широкое преимущество продавцов':balance>.10?'Умеренное преимущество покупателей':balance<-.10?'Умеренное преимущество продавцов':'Смешанный рынок · переходный режим';
   const macroObj=(st.macro&&st.macro.macro)||st.macro||{},macroRegime=(st.macro&&st.macro.regime)||{};
@@ -807,6 +856,35 @@ function renderSignals(){
   const readyCount=core.filter(x=>paperStatus(x).ready).length;
   const strongCount=core.filter(x=>['SUPER_LONG','SUPER_SHORT'].includes(tier(x))).length;
   const bestNow=best[0]||null;
+
+  // Rich state snapshot: direction, strength and execution readiness. This supports
+  // "what changed" without letting portfolio outcomes alter the market view.
+  const snapKey='veritas_v90_market_snapshot_r2',currentSnap={};
+  rows.forEach(x=>{currentSnap[x.asset+'|'+x.horizon]={tier:tier(x),direction:dir(x),confidence:finite(x.confidence),structure:finite(x.horizon_structure_score),ready:paperStatus(x).ready}});
+  let previous=null;try{previous=JSON.parse(localStorage.getItem(snapKey)||'null')}catch(e){}
+  if(!previous||previous.at!==updatedAt){
+    const changeSet=[];
+    if(previous&&previous.map){
+      Object.entries(currentSnap).forEach(([k,v])=>{
+        const old=previous.map[k];if(!old)return;
+        const parts=k.split('|'),tf=parts[1],w=tfWeight[tf]||.5;
+        const tierChanged=old.tier!==v.tier,readyChanged=Boolean(old.ready)!==Boolean(v.ready);
+        const oldConf=finite(old.confidence),newConf=finite(v.confidence),confDelta=oldConf!=null&&newConf!=null?newConf-oldConf:0;
+        if(tierChanged||readyChanged||Math.abs(confDelta)>=.12){
+          changeSet.push({asset:parts[0],horizon:tf,from:old.tier,to:v.tier,readyFrom:Boolean(old.ready),readyTo:Boolean(v.ready),confidenceDelta:confDelta,severity:w*(tierChanged?3:0)+(readyChanged?2:0)+Math.abs(confDelta)*4});
+        }
+      });
+    }
+    changeSet.sort((a,b)=>b.severity-a.severity);
+    st.marketChanges=changeSet.slice(0,8);
+    try{localStorage.setItem(snapKey,JSON.stringify({at:updatedAt,map:currentSnap}))}catch(e){}
+  }
+  const changes=Array.isArray(st.marketChanges)?st.marketChanges:[];
+  const tierRu=v=>String(v||'').replace('SUPER_LONG','Strong Long').replace('SUPER_SHORT','Strong Short').replace('LONG','Long').replace('SHORT','Short').replace('NO_TRADE','Wait');
+  $('marketChanges').innerHTML=changes.length
+    ? changes.map(ch=>'<span class="market-change"><b>'+lab(ch.asset)+' · '+tfShort(ch.horizon)+'</b> '+esc(tierRu(ch.from))+' → '+esc(tierRu(ch.to))+(Math.abs(ch.confidenceDelta)>=.12?' · оценка '+(ch.confidenceDelta>0?'+':'')+(100*ch.confidenceDelta).toFixed(0):'')+(ch.readyFrom!==ch.readyTo?' · '+(ch.readyTo?'вход готов':'вход снят'):'')+'</span>').join('')
+    : '<span class="market-change">'+(previous?'С прошлого обновления существенных изменений нет':'База сравнения формируется')+'</span>';
+
   const fallbackSummary=bestNow
     ? 'Главный направленный сценарий сейчас — '+lab(bestNow.asset)+' '+tierLabel(bestNow)+' на '+tfRu(bestNow.horizon)+'. Карта рынка показывает '+(balance>0?'преимущество Long-сценариев':balance<0?'преимущество Short-сценариев':'баланс направлений')+'.'
     : 'Направленного преимущества недостаточно. VERITAS ожидает подтверждения структуры и не форсирует входы.';
@@ -816,37 +894,76 @@ function renderSignals(){
   if(macroObj&&macroObj.dxy!=null)driverBits.push('DXY '+esc(macroObj.dxy));
   if(macroObj&&macroObj.us10y!=null)driverBits.push('US10Y '+esc(macroObj.us10y));
   const directionalShare=weighted.total?Math.max(weighted.long,weighted.short)/weighted.total:0;
+
+  const tfDirection=(asset,tfs)=>{
+    const xs=rows.filter(x=>x.asset===asset&&validSignal(x)&&tfs.includes(x.horizon)&&['LONG','SHORT'].includes(dir(x)));
+    let L=0,S=0;xs.forEach(x=>{const w=tfWeight[x.horizon]||.5;if(dir(x)==='LONG')L+=w;else S+=w});
+    return L>S?'LONG':S>L?'SHORT':'WAIT';
+  };
+  const assetState=AS.map(asset=>{
+    const xs=rows.filter(x=>x.asset===asset&&validSignal(x));
+    let L=0,S=0,total=0;xs.forEach(x=>{const w=tfWeight[x.horizon]||.5;total+=w;if(dir(x)==='LONG')L+=w;else if(dir(x)==='SHORT')S+=w});
+    const D=L>S?'LONG':S>L?'SHORT':'WAIT',agreement=total?Math.max(L,S)/total:0;
+    return {asset,D,agreement,low:tfDirection(asset,['1m','5m']),high:tfDirection(asset,['1h','4h','1d','3d','7d'])};
+  });
+  const conflicts=assetState.filter(a=>['LONG','SHORT'].includes(a.low)&&['LONG','SHORT'].includes(a.high)&&a.low!==a.high).sort((a,b)=>b.agreement-a.agreement);
+  const conclusions=[];
+  const breadthLong=weighted.total?weighted.long/weighted.total:0,breadthShort=weighted.total?weighted.short/weighted.total:0;
+  conclusions.push({
+    title:balance>.10?'Рынок смещён в пользу покупателей':balance<-.10?'Рынок смещён в пользу продавцов':'Единого рыночного направления нет',
+    fact:'Взвешенная картина ТФ: Long '+(100*breadthLong).toFixed(0)+'% · Short '+(100*breadthShort).toFixed(0)+'%. Strong-сигналов '+strongCount+'.',
+    implication:Math.abs(balance)>.10?'Приоритет — сценариям по доминирующему направлению, но только при подтверждённой структуре и валидных уровнях.':'Нужна селекция по отдельным активам; широкий directional bet сейчас слабее точечных идей.'
+  });
+  if(bestNow){
+    const bm=candidateMetrics(bestNow),admission=paperStatus(bestNow);
+    conclusions.push({
+      title:lab(bestNow.asset)+' — лучшая рыночная возможность',
+      fact:tierLabel(bestNow)+' · '+tfRu(bestNow.horizon)+' · качество '+bm.score.toFixed(0)+'/100 · согласование ТФ '+(100*bm.agreement.agreement).toFixed(0)+'% · структура '+(100*bm.structure).toFixed(0)+'% · R/R '+bm.rr.toFixed(2)+'.',
+      implication:admission.ready?'Торговый план подтверждён; это первый кандидат для действия сейчас.':admission.short==='позиция'?'Сценарий уже реализуется в позиции; приоритет — сопровождение и защита прибыли.':'Идея сильная, но вход пока не подтверждён: '+admission.reason+'.'
+    });
+  }
+  if(conflicts.length){
+    const q=conflicts[0];
+    conclusions.push({
+      title:lab(q.asset)+' — конфликт временных горизонтов',
+      fact:'Краткосрочный контур '+(q.low==='LONG'?'Long':'Short')+', старшие ТФ '+(q.high==='LONG'?'Long':'Short')+'.',
+      implication:'Сигнал менее устойчив: не наращивать позицию агрессивно до синхронизации локальной и старшей структуры.'
+    });
+  }else if(best.length>1){
+    const q=best[1],qm=candidateMetrics(q);
+    conclusions.push({
+      title:lab(q.asset)+' — второй по силе сценарий',
+      fact:tierLabel(q)+' · качество '+qm.score.toFixed(0)+'/100 · согласование ТФ '+(100*qm.agreement.agreement).toFixed(0)+'% · R/R '+qm.rr.toFixed(2)+'.',
+      implication:'Резервная возможность после главного сценария; преимущество сохраняется, пока структурные уровни не нарушены.'
+    });
+  }
+  if(changes.length){
+    const ch=changes[0];
+    conclusions.push({
+      title:'Главное изменение: '+lab(ch.asset)+' · '+tfRu(ch.horizon),
+      fact:tierRu(ch.from)+' → '+tierRu(ch.to)+(Math.abs(ch.confidenceDelta)>=.12?' · изменение оценки '+(ch.confidenceDelta>0?'+':'')+(100*ch.confidenceDelta).toFixed(0)+' п.п.':'')+'.',
+      implication:ch.readyFrom!==ch.readyTo?(ch.readyTo?'Сценарий перешёл из наблюдения в готовность к действию.':'Торговая готовность снята; старый план нельзя использовать без новой проверки.'):'Изменение включено в текущую переоценку приоритетов.'
+    });
+  }
+  if(macroRegime&&macroRegime.summary&&conclusions.length<5){
+    conclusions.push({title:'Макро-контекст',fact:String(macroRegime.summary),implication:'Макро используется как контекст и усилитель/ослабитель сценария, но не заменяет подтверждение цены и структуры.'});
+  }
+  const conclusionHtml=conclusions.slice(0,5).map((z,i)=>'<div class="market-conclusion"><div class="market-conclusion-head"><span class="market-conclusion-index">0'+(i+1)+'</span><b>'+esc(z.title)+'</b></div><div class="market-conclusion-fact">'+esc(z.fact)+'</div><div class="market-conclusion-implication"><b>Что это значит:</b> '+esc(z.implication)+'</div></div>').join('');
+
   $('marketNow').innerHTML='<div class="market-now-wrap"><div class="market-state"><div class="market-state-label">Текущий режим</div><div class="market-state-main">'+esc(marketState)+'</div><div class="market-state-summary">'+esc(marketSummary)+(driverBits.length?'<br><span style="color:var(--muted)">Контекст: '+driverBits.join(' · ')+'</span>':'')+'</div></div><div class="market-now-metrics">'+
     '<div class="market-now-metric"><span>Направленность</span><b>'+(weighted.total?(100*directionalShare).toFixed(0)+'%':'—')+'</b></div>'+
     '<div class="market-now-metric"><span>Strong-сигналы</span><b>'+strongCount+'</b></div>'+
     '<div class="market-now-metric"><span>Готово к действию</span><b>'+readyCount+'</b></div>'+
-    '<div class="market-now-metric"><span>Главный приоритет</span><b>'+(bestNow?lab(bestNow.asset)+' · '+tierLabel(bestNow):'Ждать')+'</b></div>'+
-    '</div></div>';
-
-  const snapKey='veritas_v90_market_snapshot_r1',currentSnap={};
-  rows.forEach(x=>{currentSnap[x.asset+'|'+x.horizon]=tier(x)});
-  let previous=null;try{previous=JSON.parse(localStorage.getItem(snapKey)||'null')}catch(e){}
-  if(!previous||previous.at!==updatedAt){
-    const changeSet=[];
-    if(previous&&previous.map){
-      Object.entries(currentSnap).forEach(([k,v])=>{const old=previous.map[k];if(old&&old!==v){const parts=k.split('|');changeSet.push({asset:parts[0],horizon:parts[1],from:old,to:v})}});
-    }
-    st.marketChanges=changeSet.slice(0,8);
-    try{localStorage.setItem(snapKey,JSON.stringify({at:updatedAt,map:currentSnap}))}catch(e){}
-  }
-  const changes=Array.isArray(st.marketChanges)?st.marketChanges:[];
-  const tierRu=v=>String(v||'').replace('SUPER_LONG','Strong Long').replace('SUPER_SHORT','Strong Short').replace('LONG','Long').replace('SHORT','Short').replace('NO_TRADE','Wait');
-  $('marketChanges').innerHTML=changes.length
-    ? changes.map(ch=>'<span class="market-change"><b>'+lab(ch.asset)+' · '+tfShort(ch.horizon)+'</b> '+esc(tierRu(ch.from))+' → '+esc(tierRu(ch.to))+'</span>').join('')
-    : '<span class="market-change">'+(previous?'С прошлого обновления направленные сигналы не изменились':'База сравнения формируется')+'</span>';
+    '<div class="market-now-metric"><span>Главный приоритет</span><b>'+(bestNow?lab(bestNow.asset)+' · '+marketRank(bestNow).toFixed(0)+'/100':'Ждать')+'</b></div>'+
+    '</div></div><div class="market-conclusions">'+conclusionHtml+'</div>';
 
   $('opportunities').innerHTML=best.length?'<div class="opportunity-list">'+best.slice(0,5).map((x,i)=>{
-    const admission=paperStatus(x),conf=x.confidence==null?null:100*Number(x.confidence),rr=Number(rrOf(x));
+    const admission=paperStatus(x),m=candidateMetrics(x);
     const thesis=admission.ready?'Действие подтверждено':admission.short==='позиция'?'Сценарий уже реализуется':'Следим за условием входа';
-    return '<div class="opportunity"><span class="opportunity-rank">#'+(i+1)+'</span><div class="opportunity-main"><b>'+lab(x.asset)+'</b><span>'+tfRu(x.horizon)+'</span></div><div class="opportunity-thesis"><b class="'+cls(dir(x))+'">'+tierLabel(x)+'</b> · '+thesis+'</div><div class="opportunity-score"><b>'+(conf!=null&&Number.isFinite(conf)?conf.toFixed(0)+'/100':'—')+'</b><span>R/R '+(Number.isFinite(rr)?rr.toFixed(2):'—')+'</span></div></div>';
+    return '<div class="opportunity"><span class="opportunity-rank">#'+(i+1)+'</span><div class="opportunity-main"><b>'+lab(x.asset)+'</b><span>'+tfRu(x.horizon)+'</span></div><div class="opportunity-thesis"><b class="'+cls(dir(x))+'">'+tierLabel(x)+'</b> · '+thesis+'<div class="opportunity-factors"><span class="opportunity-factor">ТФ '+(100*m.agreement.agreement).toFixed(0)+'%</span><span class="opportunity-factor">Структура '+(100*m.structure).toFixed(0)+'%</span><span class="opportunity-factor">R/R '+m.rr.toFixed(2)+'</span><span class="opportunity-factor">Подтв. '+Math.round(5*m.evidence)+'</span></div></div><div class="opportunity-score"><strong>Качество</strong><b>'+m.score.toFixed(0)+'/100</b><span>ход '+(100*m.move).toFixed(2)+'%</span></div></div>';
   }).join('')+'</div>':'<div class="msg">Сильных направленных возможностей сейчас нет.</div>';
 
-  $('actions').innerHTML=best.length?best.map(x=>{
+  $('actions').innerHTML=actionBest.length?actionBest.map(x=>{
     const rr=Number(rrOf(x)),admission=paperStatus(x),sig=directionLabel(dir(x),tier(x));
     const state=admission.ready?(admission.action==='ADD'?'ДОБОР ИСПОЛНЕН':'ОРДЕР ИСПОЛНЕН'):admission.short==='позиция'?'ПОЗИЦИЯ ОТКРЫТА':admission.short==='проверка'?'ПРОВЕРКА ВХОДА':'ВХОД ЗАБЛОКИРОВАН';
     return '<div class="row action"><div class="action-head"><button class="action-link" data-signal="'+esc(x.asset+'|'+x.horizon)+'"><b>'+lab(x.asset)+'</b></button><b class="'+cls(dir(x))+'">Прогноз: '+ar(dir(x))+' '+sig+'</b><span class="admission-label">'+paperAction(admission)+'</span><span>'+tfRu(x.horizon)+'</span></div>'+
