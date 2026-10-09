@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
-from veritas_market_runtime import install_market_runtime_guard, normalize_moex_index_session
+from veritas_market_runtime import (install_market_runtime_guard, normalize_moex_index_session,
+                                   moex_index_session_open)
 
 
 def runtime(fetch, assets=None, cache=None):
@@ -78,6 +79,18 @@ class MarketPrefetchTests(unittest.TestCase):
 
 
 class MoexExtendedSessionTests(unittest.TestCase):
+    def test_versioned_index_session_window(self):
+        self.assertTrue(moex_index_session_open(
+            datetime(2026,10,9,19,22,44,tzinfo=timezone.utc)))  # 22:22 MSK
+        self.assertFalse(moex_index_session_open(
+            datetime(2026,10,9,20,50,0,tzinfo=timezone.utc)))   # 23:50 MSK
+        self.assertFalse(moex_index_session_open(
+            datetime(2026,10,10,12,0,tzinfo=timezone.utc)))     # Saturday
+        self.assertTrue(moex_index_session_open(
+            datetime(2026,9,25,10,0,tzinfo=timezone.utc)))      # legacy 13:00 MSK
+        self.assertFalse(moex_index_session_open(
+            datetime(2026,9,25,18,30,tzinfo=timezone.utc)))     # legacy 21:30 MSK
+
     def bundle(self, observed='2026-10-09T19:22:35+00:00', source='MOEX ISS IMOEX'):
         return {'asset':'MOEX','raw':{
             'asset':'MOEX','price':2370.6,'source_names':{'primary':source},
