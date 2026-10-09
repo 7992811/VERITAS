@@ -112,12 +112,13 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
             with patch.object(G, 'exit_fill', side_effect=AssertionError('irrelevant structural legacy fill')):
                 self.assertEqual(G.run_protective_pass(None, connect, {'ETH': q}, NOW), [])
             reads = [sql for sql, args in trace.statements if sql.startswith('SELECT') and 'advisory' not in sql]
-            updates = [(sql, args) for sql, args in trace.statements if sql.startswith('UPDATE')]
+            writes = [(sql, args) for sql, args in trace.statements
+                      if sql.startswith('UPDATE') or sql.startswith('WITH incoming AS MATERIALIZED')]
             self.assertEqual(reads, [PR.PROTECTION_SQL+' ORDER BY portfolio_name,asset FOR UPDATE'])
-            self.assertEqual(len(updates), 4)
-            self.assertEqual([len(json.loads(args[0])) for sql, args in updates],
-                             [PR.BATCH_SIZE, PR.BATCH_SIZE, 1, 1])
-            self.assertTrue(all(len(args[0]) < 60000 for sql, args in updates))
+            self.assertEqual(len(writes), 2)
+            self.assertEqual([len(json.loads(args[0])) for sql, args in writes],
+                             [PR.BATCH_SIZE, 1])
+            self.assertTrue(all(len(args[0]) < 60000 for sql, args in writes))
             saved = {z['active_trade_id']: z for z in c.execute('SELECT * FROM paper_positions').fetchall()}
             trades = {z['trade_id']: z for z in c.execute('SELECT * FROM paper_trades').fetchall()}
             for original in rows:

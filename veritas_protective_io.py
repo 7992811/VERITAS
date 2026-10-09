@@ -66,6 +66,63 @@ def _write_chunk(c, rows):
             'WHERE target.'+key+'=delta.trade_id', (encoded,))
 
 
+def _write_chunk_one_roundtrip(c, rows):
+    """Mirror one batch to positions and trades with one encoded payload/round-trip."""
+    encoded = json.dumps(rows, allow_nan=False)
+    return c.execute(
+        """WITH incoming AS MATERIALIZED (
+             SELECT * FROM jsonb_to_recordset(%s::jsonb)
+               AS delta(trade_id text,patch jsonb)
+           ), position_updates AS (
+             UPDATE paper_positions AS target
+             SET payload=COALESCE(target.payload,'{}'::jsonb)||incoming.patch
+             FROM incoming
+             WHERE target.active_trade_id=incoming.trade_id
+             RETURNING target.active_trade_id
+           ), trade_updates AS (
+             UPDATE paper_trades AS target
+             SET payload=COALESCE(target.payload,'{}'::jsonb)||incoming.patch
+             FROM incoming
+             WHERE target.trade_id=incoming.trade_id
+             RETURNING target.trade_id
+           )
+           SELECT
+             (SELECT count(*) FROM position_updates) AS position_updates,
+             (SELECT count(*) FROM trade_updates) AS trade_updates""",
+        (encoded,)
+    ).fetchone()
+
+
+def write_patches_one_roundtrip(c, patches, *, optional=False):
+    """Write mirrored metadata with one SQL call per batch of up to 32 rows.
+
+    This preserves the same atomic two-table payload state as the existing
+    writer while avoiding duplicate JSON transmission and a second round-trip.
+    """
+    applied = set()
+    for chunk in _chunks(patches):
+        if not optional:
+            _write_chunk_one_roundtrip(c, chunk)
+            applied.update(row['trade_id'] for row in chunk)
+            continue
+        try:
+            with c.transaction():
+                _write_chunk_one_roundtrip(c, chunk)
+        except Exception:
+            if len(chunk) == 1:
+                continue
+            for row in chunk:
+                try:
+                    with c.transaction():
+                        _write_chunk_one_roundtrip(c, [row])
+                except Exception:
+                    continue
+                applied.add(row['trade_id'])
+        else:
+            applied.update(row['trade_id'] for row in chunk)
+    return applied
+
+
 def write_patches(c, patches, *, optional=False):
     """Write at most 32 trade deltas together; return successfully applied IDs.
 
