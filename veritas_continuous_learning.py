@@ -719,7 +719,11 @@ class ContinuousLearning:
                           THEN (d.payload->>'trade_entry_eligible')::boolean
                           ELSE NULL END AS admission_eligible,
                      COALESCE(d.payload->>'final_gate_status','') AS final_gate_status,
-                     COALESCE(d.payload->'final_gate_blockers','[]'::jsonb) AS final_gate_blockers
+                     COALESCE(d.payload->'final_gate_blockers','[]'::jsonb) AS final_gate_blockers,
+                     COALESCE(d.payload->>'plan_reason','') AS plan_reason,
+                     COALESCE(d.payload->>'trade_entry_reason','') AS trade_entry_reason,
+                     COALESCE(d.payload->>'execution_reason','') AS execution_reason,
+                     COALESCE(d.payload->>'paper_execution_reason','') AS paper_execution_reason
               FROM recent e
               CROSS JOIN LATERAL (
                 SELECT id,payload FROM ledger_events d
