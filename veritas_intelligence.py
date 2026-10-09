@@ -19255,9 +19255,6 @@ def main():
     # The scheduler retries bootstrap after temporary database outages too.
     # Its jobs perform no work until their durable state schema is available.
     _continuous_learning.start()
-    if pg_boot.get('ok'):
-        threading.Thread(target=_v90r41_background_storage_audit,daemon=True,
-                         name='veritas-storage-audit').start()
     if pg_boot.get('ok') and VP is not None:
         VPG.start(globals())
         from veritas_quality_delivery import install as install_quality_delivery
@@ -19266,6 +19263,9 @@ def main():
         import veritas_structural_lifecycle as VSL
         VBR.start(globals(),entry_pass=lambda rows,clock:VSL.fast_entry_pass(globals(),rows,clock,runtime=True))
     threading.Thread(target=loop, daemon=True).start()
+    if pg_boot.get('ok'):
+        threading.Thread(target=_v90r41_background_storage_audit,daemon=True,
+                         name='veritas-storage-audit').start()
     if not _BOOTSTRAP_READY:
         threading.Thread(target=_v90r41_readiness_retry_loop,daemon=True,
                          name='veritas-startup-readiness').start()
