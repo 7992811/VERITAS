@@ -255,6 +255,34 @@ class ObservationPathTests(unittest.TestCase):
         self.assertNotIn('ignored_history',actual)
         self.assertEqual(row,before)
 
+    def test_canonical_exit_merges_latest_external_sampler_witness(self):
+        current=trade();add(current,0,at_entry=True);add(current,15,101.)
+        external=deepcopy(current["payload"]["observation_path"])
+        stale=trade();add(stale,0,at_entry=True)
+        stale.update(status="CLOSED",closed_at=stamp(30))
+
+        class PsycopgLike:
+            row_factory=True
+            def __init__(self,witness):self.witness=deepcopy(witness);self.next=None;self.writes=[]
+            @contextmanager
+            def transaction(self):yield self
+            def execute(self,sql,params=()):
+                self.writes.append((sql,params))
+                if sql.startswith("SELECT witness FROM paper_trade_observation_paths"):
+                    self.next={"witness":deepcopy(self.witness)}
+                elif sql.startswith("INSERT INTO paper_trade_observation_paths"):
+                    self.witness=json.loads(params[2]);self.next=None
+                else:self.next=None
+                return self
+            def fetchone(self):return deepcopy(self.next)
+
+        db=PsycopgLike(external)
+        result=PATH.record(db,stale,quote(30,99.),stamp(30),lane="CANONICAL_EXIT")
+        assessment=PATH.assessment(result)
+        self.assertTrue(assessment["eligible"],assessment)
+        self.assertEqual(result["payload"]["observation_path"]["observation_count"],3)
+        self.assertEqual(db.witness["last_observed_at"],stamp(30))
+
     def test_accounting_copy_keeps_failure_marker_and_cannot_create_missing_evidence(self):
         self.assertIsNone(PATH.bounded_witness(trade()))
         row=complete();row['payload']['observation_path']['invalid_observation_count']=1
