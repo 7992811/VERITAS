@@ -1,0 +1,39 @@
+name: Live Position Protection Audit
+on:
+  push:
+    branches: [ "audit/live-position-protection-0dbb9f2" ]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read production position protection audit
+        shell: python
+        run: |
+          import json, urllib.request, time
+          url='https://veritas-intelligence-v1.onrender.com/api/v1/paper-portfolios?cb='+str(int(time.time()))
+          req=urllib.request.Request(url,headers={'Accept':'application/json','User-Agent':'VERITAS-live-protection-audit/1.0'})
+          with urllib.request.urlopen(req,timeout=45) as r:
+              data=json.load(r)
+          summary=data.get('position_protection_audit') or {}
+          print('AUDIT_SUMMARY='+json.dumps(summary,ensure_ascii=False,separators=(',',':')))
+          rows=[]
+          for p in data.get('portfolios') or []:
+              for z in p.get('positions') or []:
+                  a=z.get('protection_audit') or {}
+                  checks=a.get('checks') or {}
+                  rows.append({
+                    'portfolio':p.get('name'),'asset':z.get('asset'),'direction':z.get('direction'),
+                    'status':a.get('status'),'errors':a.get('errors'),'warnings':a.get('warnings'),
+                    'sl':z.get('effective_stop_price'),'tp1':z.get('tp1_price'),
+                    'tp2_or_runner':z.get('second_take_price'),'second_kind':z.get('second_take_kind'),
+                    'tf':a.get('management_timeframe'),
+                    'source':(checks.get('source') or {}).get('status'),
+                    'profit':(checks.get('profit_protection') or {}).get('state'),
+                    'to_sl_pct':a.get('distance_to_stop_pct'),
+                    'to_target_pct':a.get('distance_to_next_target_pct'),
+                  })
+          print('AUDIT_ROWS='+json.dumps(rows,ensure_ascii=False,separators=(',',':')))
