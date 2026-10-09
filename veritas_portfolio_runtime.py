@@ -1278,10 +1278,10 @@ def _v90r46_hold_context(name,z,row):
       'portfolio':str(name or ''),
     }
 
-def _v90r46_mark_trend_hold(c,name,candidates,summary,ts):
+def _v90r46_mark_trend_hold(c,name,candidates,summary,ts,positions=None):
     marked=[]
     try:
-        rows=c.execute(
+        rows=positions if positions is not None else c.execute(
             "SELECT * FROM paper_positions WHERE portfolio_name=%s",(name,)
         ).fetchall()
     except Exception:
@@ -1318,6 +1318,8 @@ def _v90r46_mark_trend_hold(c,name,candidates,summary,ts):
                 "WHERE trade_id=%s",
                 (json.dumps(patch,ensure_ascii=False,default=str),tid)
             )
+        if isinstance(z0,dict):
+            local=_v90j_json(z0.get('payload')); local.update(patch); z0['payload']=local
         marked.append({'asset':asset,**ctx})
     return marked
 
@@ -1462,15 +1464,13 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     )
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
-    # Refresh MFE before deciding whether profit has started to give back.
-    try:
-        _v90j_update_excursions(c,name,prices,ts)
-    except Exception:
-        pass
-    _v90r46_mark_trend_hold(c,name,candidates,summary,ts)
-
+    # One complete book snapshot is enough for excursion, trend-hold and
+    # giveback logic. Each writer patches this local copy after its durable SQL.
     try:
         p,pos=_portfolio_rows(c,name)
+        pos=[dict(z) for z in pos]
+        _v90j_update_excursions(c,name,prices,ts,positions=pos)
+        _v90r46_mark_trend_hold(c,name,candidates,summary,ts,positions=pos)
         nav,_,_,_=_mark_nav(p,pos,prices)
         _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=pos)
     except Exception:
