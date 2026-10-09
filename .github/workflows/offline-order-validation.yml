@@ -31,9 +31,12 @@ jobs:
           suite=unittest.TestSuite([
               loader.loadTestsFromName('test_veritas_offline_order_cycle'),
               loader.loadTestsFromName('test_veritas_signal_robot'),
-              loader.loadTestsFromName('test_veritas_trade_approvals'),
-              loader.loadTestsFromName('test_veritas_currency_trade_service'),
-              loader.loadTestsFromName('test_veritas_currency_trading'),
+              loader.loadTestsFromName('test_veritas_trade_approvals.TradeApprovalTests'),
+              loader.loadTestsFromName('test_veritas_currency_trade_service.CurrencyHttpBoundaryTests'),
+              loader.loadTestsFromName('test_veritas_currency_trade_service.TradeHttpRepositoryTests'),
+              loader.loadTestsFromName('test_veritas_currency_trade_service.TradeHttpEnvironmentTests'),
+              loader.loadTestsFromName('test_veritas_currency_trading.ContractSizingTests'),
+              loader.loadTestsFromName('test_veritas_currency_trading.CoordinatorTests'),
           ])
           count=suite.countTestCases()
           if count<80:
