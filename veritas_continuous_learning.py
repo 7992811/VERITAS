@@ -691,14 +691,14 @@ class ContinuousLearning:
         with transaction(self.connect, context) as c:
             decisions=c.execute("""
               WITH recent AS MATERIALIZED (
-                SELECT entity_key,decision_ts,asset,horizon,regime,decision,forward_return
+                SELECT entity_key,decision_ts,asset,horizon,regime,decision,forward_return,mfe,mae
                 FROM v90_decision_episodes
                 WHERE asset=%s
                 ORDER BY decision_ts DESC
                 LIMIT %s
               )
               SELECT d.id AS decision_id,e.entity_key,e.decision_ts AS event_ts,
-                     e.asset,e.horizon,e.regime,e.decision,e.forward_return,
+                     e.asset,e.horizon,e.regime,e.decision,e.forward_return,e.mfe,e.mae,
                      COALESCE(d.payload->>'setup_family',d.payload->>'strategy_family',
                               d.payload#>>'{trade_plan,setup_family}','') AS setup_family,
                      COALESCE(d.payload#>>'{learning_provenance,policy_hash}',
