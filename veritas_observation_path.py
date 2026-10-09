@@ -340,7 +340,7 @@ def assessment(row):
     return out
 
 
-def record(c, row, quote, checked_at, *, at_entry=False, lane="CANONICAL_EXECUTION"):
+def record(c, row, quote, checked_at, *, at_entry=False, lane="CANONICAL_EXECUTION", extra_patch=None):
     """Metadata writes cannot abort the caller's protective accounting.
 
     A real psycopg connection nests transaction() as a savepoint. Failed metadata
@@ -349,7 +349,8 @@ def record(c, row, quote, checked_at, *, at_entry=False, lane="CANONICAL_EXECUTI
     """
     row = dict(row) if isinstance(row,dict) else {}
     witness = observe(row, quote, checked_at, at_entry=at_entry, lane=lane)
-    patch = {"observation_path": witness}
+    patch = dict(extra_patch) if isinstance(extra_patch,dict) else {}
+    patch.pop("observation_path",None); patch["observation_path"] = witness
     trade_id = row.get("active_trade_id") or row.get("trade_id")
     if trade_id:
         try:
