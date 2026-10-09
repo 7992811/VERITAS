@@ -22,12 +22,32 @@ vm.runInContext(script.replace(/\}\)\(\);\s*$/,
   'globalThis.ui={st,renderReview,reviewSetTab,reviewTradeModel,aggregateMissed,hypothesisRuleText};})();'),
   context,{timeout:2000});
 const ui=context.ui;
-ui.st.trades={trades:[{
+const trade={
   trade_id:'t1',portfolio_name:'Champion',asset:'BTC',horizon:'5m',direction:'LONG',status:'CLOSED',
   opened_at:'2026-10-09T09:00:00Z',closed_at:'2026-10-09T09:30:00Z',
   avg_entry_price:100,avg_exit_price:99.9,net_pnl_rub:-120,gross_pnl_rub:-100,
-  payload:{mfe_pct:0.22,mae_pct:-0.08,initial_stop_price:99.5}
-}]};
+  payload:{mfe_pct:0.22,mae_pct:-0.08,initial_stop_price:99.5},
+  self_learning_review:{
+    version:'TRADE_POSTMORTEM_V2',classification:'PROFIT_GIVEBACK_REVIEW',
+    material_mfe_threshold_pct:0.15,evidence_status:'UNVERIFIED',
+    path:{mfe_pct:0.22,mae_pct:-0.08,material_profit_giveback:true},
+    execution:{entry_fill_count:2,exit_fill_count:1,take_profit_fill_count:1,had_adds:true,partial_profit_observed:true},
+    levels_volatility:{entry:100,initial_stop:99.5,initial_target:102,atr:1,initial_risk_atr:.5,
+      stop_anchor:99.65,protected_level_kind:'previous_low',stop_anchor_buffer_atr:.15,
+      target_distance_atr:2,gross_target_to_risk:4,target_ladder:[{price:101},{price:102}]},
+    market_context:{trigger_timeframe:'5m',structural_timeframe:'1h',stop_timeframe:'1h',atr_timeframe:'1h',
+      moving_averages:{sma18:100.5,sma50:98,sma200:90},
+      moving_averages_in_trade_path:[{name:'SMA18',price:100.5}],indicators:{rsi:58,adx:27}},
+    issues:['Материальная прибыль была отдана обратно.'],strengths:['Стоп расположен за предыдущим low.'],
+    evidence_limitations:['ORDERED_PATH_REPLAY_REQUIRED'],violations:[],
+    proposals:[{kind:'EPISODE_ADD_PROFIT_FLOOR',title:'Защитить результат всей идеи при доборах',
+      rationale:'Новый ADD не должен превращать защищённый эпизод в отрицательный.',
+      status:'OWNER_REVIEW_REQUIRED',canonical_conflicts:['Сохранить трендовое ускорение.'],
+      promotion_blockers:['SHADOW_AND_OOS_REQUIRED']}]
+  }
+};
+ui.st.trades={trades:[trade],self_learning_trades:[trade],
+  self_learning_owner_review_queue:[{trade_id:'t1',proposal:trade.self_learning_review.proposals[0]}]};
 ui.st.autonomous={counts:{direction:40,trade:8},learning_v2:{
   hypotheses:[{hypothesis_id:'h1',kind:'ENTRY_BLOCKER_RELAXATION',scope:{asset:'BTC',horizon:'5m',regime:'TREND'},
     proposal:{blocker:'RISK_REWARD_GATE',action:'SHADOW_REEVALUATE_AFTER_BLOCK'},
@@ -42,11 +62,17 @@ ui.renderReview();
 assert.equal(elements.reviewBadge.textContent,'4');
 assert.match(elements.reviewSummary.innerHTML,/Закрытых в разборе<\/span><b>1<\/b>/);
 assert.match(elements.reviewSummary.innerHTML,/Упущенных эпизодов<\/span><b class="warn">3<\/b>/);
+assert.match(elements.reviewSummary.innerHTML,/Кандидатов \/ на утверждение<\/span><b>1 \/ 1<\/b>/);
 assert.match(elements.reviewSummary.innerHTML,/Опыт \/ shadow<\/span><b>48 \/ 1<\/b>/);
 assert.match(elements.reviewBody.innerHTML,/MFE ≥ 0,15%/);
 assert.match(elements.reviewBody.innerHTML,/P&L контрфакт/);
 assert.match(elements.reviewBody.innerHTML,/не показаны без доказанного ordered-path replay/);
-assert.match(elements.reviewBody.innerHTML,/безубыток и дальнейший структурный трейлинг/);
+assert.match(elements.reviewBody.innerHTML,/Материальная прибыль была отдана обратно/);
+assert.match(elements.reviewBody.innerHTML,/предыдущий low/);
+assert.match(elements.reviewBody.innerHTML,/SMA18/);
+assert.match(elements.reviewBody.innerHTML,/Защитить результат всей идеи при доборах/);
+assert.match(elements.reviewBody.innerHTML,/На утверждение/);
+assert.match(elements.reviewBody.innerHTML,/ORDERED_PATH_REPLAY_REQUIRED/);
 assert.match(elements.reviewBody.innerHTML,/Упущенные возможности/);
 assert.match(elements.reviewBody.innerHTML,/Пропущенный вход/);
 assert.match(elements.reviewBody.innerHTML,/Подтверждено в shadow/);
