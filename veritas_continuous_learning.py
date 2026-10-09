@@ -709,9 +709,16 @@ class ContinuousLearning:
                      COALESCE(d.payload#>>'{learning_provenance,source_identity,contract_id}',
                               d.payload#>>'{timeframe_entry_context,source_identity,contract_id}',
                               d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,contract_id}','') AS contract_id,
-                     COALESCE(d.payload->>'horizon_structure_direction',
-                              d.payload#>>'{timeframe_entry_context,event,direction}',
-                              d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}','') AS candidate_direction,
+                     CASE WHEN e.decision IN ('LONG','SHORT') THEN e.decision
+                          ELSE COALESCE(d.payload#>>'{timeframe_entry_context,event,direction}',
+                                        d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}',
+                                        NULLIF(d.payload->>'horizon_structure_direction','NO_TRADE'),'') END AS candidate_direction,
+                     CASE WHEN d.payload->>'plan_eligible' IN ('true','false')
+                          THEN (d.payload->>'plan_eligible')::boolean
+                          WHEN d.payload->>'trade_entry_eligible' IN ('true','false')
+                          THEN (d.payload->>'trade_entry_eligible')::boolean
+                          ELSE NULL END AS admission_eligible,
+                     COALESCE(d.payload->>'final_gate_status','') AS final_gate_status,
                      COALESCE(d.payload->'final_gate_blockers','[]'::jsonb) AS final_gate_blockers
               FROM recent e
               CROSS JOIN LATERAL (
