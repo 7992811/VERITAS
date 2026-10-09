@@ -76,6 +76,23 @@ def review(trade, snapshot=None):
     stop=_num(t.get("stop_price")); target=_num(t.get("take_price"))
     atr=_num(s.get("atr")); mfe=_num(t.get("mfe_pct")); mae=_num(t.get("mae_pct"))
     net=_num(t.get("net_pnl_rub")) or 0.0
+    gross=_num(t.get("gross_pnl_rub")) or 0.0
+    fees=max(0.0,_num(t.get("fees_rub")) or 0.0)
+    funding=max(0.0,_num(t.get("funding_rub")) or 0.0)
+    raw_payload=t.get("payload") or {}
+    try:
+        trade_payload=json.loads(raw_payload) if isinstance(raw_payload,str) else dict(raw_payload)
+    except (TypeError,ValueError):
+        trade_payload={}
+    target_history=list(trade_payload.get("target_lifecycle_history") or [])
+    partial_seen=any((x or {}).get("action")=="TARGET_PARTIAL" for x in target_history)
+    seen_partial=False; replan_after_partial=False
+    for item in target_history:
+        action=str((item or {}).get("action") or "")
+        if action=="TARGET_PARTIAL":
+            seen_partial=True
+        elif seen_partial and action=="CONFIRMED_ADD_REPLANS_REMAINING_TARGETS":
+            replan_after_partial=True; break
     direction=str(t.get("direction") or "")
     sign=1.0 if direction=="LONG" else -1.0
     issues=[]; strengths=[]; proposals=[]
@@ -97,6 +114,23 @@ def review(trade, snapshot=None):
     target_zone_distance_atr=(abs(target-entry)/atr if target and entry and atr else None)
     if net>0: strengths.append("Сделка закрыта с положительным результатом после расходов.")
     else: issues.append("Отрицательный финансовый результат после расходов.")
+    cost_drag=bool(net<0 and gross>0 and fees+funding>=gross)
+    episode_giveback=bool(net<0 and partial_seen)
+    secondary_findings=[]
+    if cost_drag:
+        secondary_findings.append("COST_DRAG")
+        issues.append("Положительный gross-результат был полностью съеден накопленными расходами.")
+    if episode_giveback:
+        secondary_findings.append("EPISODE_PROFIT_GIVEBACK")
+        issues.append("В эпизоде уже была структурная фиксация прибыли, но итог сделки стал отрицательным.")
+    if replan_after_partial and net<0:
+        secondary_findings.append("TARGET_REPLAN_AFTER_PARTIAL")
+        proposals.append(_proposal(t.get("trade_id"),"EPISODE_PROFIT_FLOOR",
+            "Ограничить добор после уже заработанной прибыли итогом всей идеи на стопе",
+            "После частичного TP новый подтверждённый ADD может перепланировать runner, "
+            "но его размер не должен опускать прогнозируемый net-P&L всей идеи на активном стопе ниже нуля.",
+            tests=[{"parameter":"episode_floor_rub","values":[0.0]},
+                   {"parameter":"add_sizing","values":["CAP_TO_FLOOR","BLOCK_IF_NO_FULL_STEP"]}]))
     material_profit_threshold_pct=max(
         0.25,100.0*float(CTC.COST_POLICY["round_trip_base_cost_pct"])
         *float(CTC.COST_POLICY["cost_buffer_multiple"]))
@@ -133,6 +167,12 @@ def review(trade, snapshot=None):
         strengths.append("Первая цель совпадает с сохранённой ранее наблюдавшейся структурной зоной.")
     elif target and not target_ladder:
         issues.append("Для цели нет сохранённого доказательства предыдущей структурной зоны; проверить происхождение тейка.")
+    if net>=0:
+        primary_review_class="PROFITABLE_CONTROL"
+    elif profit_protection_candidate or episode_giveback:
+        primary_review_class="PROFIT_MANAGEMENT_REVIEW"
+    else:
+        primary_review_class="ENTRY_OR_DIRECTION_REVIEW"
     diag=t.get("trade_diagnostics") or {}
     eligible=bool(t.get("learning_eligible"))
     evidence="VERIFIED" if eligible else "UNVERIFIED"
@@ -141,7 +181,13 @@ def review(trade, snapshot=None):
     return _copy({
         "version":VERSION,"trade_id":t.get("trade_id"),"episode_key":t.get("episode_key"),
         "status":"REVIEWED","evidence_status":evidence,
-        "financial_result_rub":net,"exit_reason":t.get("exit_reason"),
+        "financial_result_rub":net,"gross_result_rub":gross,
+        "costs_rub":fees+funding,"exit_reason":t.get("exit_reason"),
+        "primary_review_class":primary_review_class,
+        "secondary_findings":secondary_findings,
+        "episode_lifecycle":{"partial_profit_seen":partial_seen,
+            "target_replan_after_partial":replan_after_partial,
+            "target_lifecycle_history":target_history[-16:]},
         "levels_volatility":{"entry":entry,"exit":exitp,"stop":stop,"target":target,
             "atr":atr,"initial_risk_atr":risk_atr,"target_distance_atr":target_atr,
             "gross_target_to_risk":rr,"stop_anchor":anchor,"stop_beyond_anchor":stop_anchor_ok,
