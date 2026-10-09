@@ -1077,6 +1077,7 @@ def pg_init():
         CREATE INDEX IF NOT EXISTS idx_ledger_asset_horizon ON ledger_events(asset,horizon,event_ts DESC);
         CREATE TABLE IF NOT EXISTS v90_decision_episodes(
           entity_key TEXT PRIMARY KEY,
+          decision_id BIGINT,
           decision_ts TIMESTAMPTZ NOT NULL,
           outcome_ts TIMESTAMPTZ NOT NULL,
           asset TEXT NOT NULL,
@@ -1088,10 +1089,37 @@ def pg_init():
           mae DOUBLE PRECISION,
           model_version TEXT,
           knowledge_shadow_matches JSONB NOT NULL DEFAULT '[]'::jsonb,
+          setup_family TEXT,
+          policy_hash TEXT,
+          source_key TEXT,
+          contract_id TEXT,
+          candidate_direction TEXT,
+          admission_eligible BOOLEAN,
+          final_gate_status TEXT,
+          final_gate_blockers JSONB NOT NULL DEFAULT '[]'::jsonb,
+          plan_reason TEXT,
+          trade_entry_reason TEXT,
+          execution_reason TEXT,
+          paper_execution_reason TEXT,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS decision_id BIGINT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS setup_family TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS policy_hash TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS source_key TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS contract_id TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS candidate_direction TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS admission_eligible BOOLEAN;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS final_gate_status TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS final_gate_blockers JSONB NOT NULL DEFAULT '[]'::jsonb;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS plan_reason TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS trade_entry_reason TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS execution_reason TEXT;
+        ALTER TABLE v90_decision_episodes ADD COLUMN IF NOT EXISTS paper_execution_reason TEXT;
         CREATE INDEX IF NOT EXISTS idx_v90_decision_episodes_ts
           ON v90_decision_episodes(decision_ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_v90_decision_episodes_asset_ts
+          ON v90_decision_episodes(asset,decision_ts DESC);
         CREATE INDEX IF NOT EXISTS idx_v90_decision_episodes_strata
           ON v90_decision_episodes(asset,horizon,regime,decision_ts DESC);
         CREATE TABLE IF NOT EXISTS knowledge_sources(
@@ -1562,28 +1590,72 @@ def _v90_materialize_decision_episode(entity_key,outcome_payload,outcome_ts=None
     try:
         with pg_connect() as c:
             c.execute("""WITH d AS (
-                SELECT entity_key,event_ts,asset,horizon,payload,model_version
+                SELECT id,entity_key,event_ts,asset,horizon,payload,model_version
                 FROM ledger_events
                 WHERE entity_key=%s AND event_type='decision'
-                ORDER BY event_ts DESC
+                ORDER BY event_ts DESC,id DESC
                 LIMIT 1
               )
               INSERT INTO v90_decision_episodes(
-                entity_key,decision_ts,outcome_ts,asset,horizon,regime,decision,
-                forward_return,mfe,mae,model_version,knowledge_shadow_matches,updated_at
+                entity_key,decision_id,decision_ts,outcome_ts,asset,horizon,regime,decision,
+                forward_return,mfe,mae,model_version,knowledge_shadow_matches,
+                setup_family,policy_hash,source_key,contract_id,candidate_direction,
+                admission_eligible,final_gate_status,final_gate_blockers,
+                plan_reason,trade_entry_reason,execution_reason,paper_execution_reason,updated_at
               )
-              SELECT d.entity_key,d.event_ts,%s,d.asset,d.horizon,
+              SELECT d.entity_key,d.id,d.event_ts,%s,d.asset,d.horizon,
                      COALESCE(d.payload->>'regime','UNKNOWN'),
                      COALESCE(d.payload->>'research_decision',d.payload->>'decision','NO_TRADE'),
                      %s,%s,%s,d.model_version,
-                     COALESCE(d.payload->'knowledge_shadow_matches','[]'::jsonb),now()
+                     COALESCE(d.payload->'knowledge_shadow_matches','[]'::jsonb),
+                     COALESCE(d.payload->>'setup_family',d.payload->>'strategy_family',
+                              d.payload#>>'{trade_plan,setup}',''),
+                     COALESCE(d.payload#>>'{learning_provenance,policy_hash}',''),
+                     COALESCE(d.payload#>>'{learning_provenance,quote,source_identity,key}',
+                              d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,key}',''),
+                     COALESCE(d.payload#>>'{learning_provenance,quote,source_identity,contract_id}',
+                              d.payload#>>'{trade_plan,timeframe_entry_context,source_identity,contract_id}',''),
+                     CASE WHEN COALESCE(d.payload->>'research_decision',d.payload->>'decision','') IN ('LONG','SHORT')
+                          THEN COALESCE(d.payload->>'research_decision',d.payload->>'decision')
+                          ELSE COALESCE(d.payload#>>'{trade_plan,timeframe_entry_context,event,direction}','') END,
+                     CASE
+                       WHEN COALESCE(d.payload->>'plan_eligible',d.payload#>>'{trade_plan,eligible}')='false'
+                         OR COALESCE(d.payload->>'trade_entry_eligible',
+                                     d.payload#>>'{execution_eligibility,eligible}',
+                                     d.payload#>>'{execution_eligibility,paper_eligible}')='false' THEN false
+                       WHEN COALESCE(d.payload->>'plan_eligible',d.payload#>>'{trade_plan,eligible}')='true'
+                         AND COALESCE(d.payload->>'trade_entry_eligible',
+                                     d.payload#>>'{execution_eligibility,eligible}',
+                                     d.payload#>>'{execution_eligibility,paper_eligible}')='true' THEN true
+                       ELSE NULL END,
+                     COALESCE(NULLIF(d.payload->>'final_gate_status',''),
+                       CASE WHEN COALESCE(d.payload->>'plan_eligible',d.payload#>>'{trade_plan,eligible}')='false'
+                                  OR COALESCE(d.payload->>'trade_entry_eligible',
+                                              d.payload#>>'{execution_eligibility,eligible}',
+                                              d.payload#>>'{execution_eligibility,paper_eligible}')='false'
+                            THEN 'BLOCK' ELSE '' END),
+                     COALESCE(d.payload->'final_gate_blockers',
+                              d.payload#>'{execution_eligibility,paper_source_blockers}','[]'::jsonb),
+                     COALESCE(NULLIF(d.payload->>'plan_reason',''),d.payload#>>'{trade_plan,reason}',''),
+                     COALESCE(NULLIF(d.payload->>'trade_entry_reason',''),d.payload#>>'{execution_eligibility,reason}',''),
+                     COALESCE(NULLIF(d.payload->>'execution_reason',''),d.payload#>>'{execution_eligibility,reason}',''),
+                     COALESCE(NULLIF(d.payload->>'paper_execution_reason',''),
+                              d.payload#>>'{execution_eligibility,paper_execution_reason}',''),
+                     now()
               FROM d
               ON CONFLICT(entity_key) DO UPDATE SET
-                decision_ts=EXCLUDED.decision_ts,outcome_ts=EXCLUDED.outcome_ts,
+                decision_id=EXCLUDED.decision_id,decision_ts=EXCLUDED.decision_ts,outcome_ts=EXCLUDED.outcome_ts,
                 asset=EXCLUDED.asset,horizon=EXCLUDED.horizon,regime=EXCLUDED.regime,
                 decision=EXCLUDED.decision,forward_return=EXCLUDED.forward_return,
                 mfe=EXCLUDED.mfe,mae=EXCLUDED.mae,model_version=EXCLUDED.model_version,
-                knowledge_shadow_matches=EXCLUDED.knowledge_shadow_matches,updated_at=now()
+                knowledge_shadow_matches=EXCLUDED.knowledge_shadow_matches,
+                setup_family=EXCLUDED.setup_family,policy_hash=EXCLUDED.policy_hash,
+                source_key=EXCLUDED.source_key,contract_id=EXCLUDED.contract_id,
+                candidate_direction=EXCLUDED.candidate_direction,admission_eligible=EXCLUDED.admission_eligible,
+                final_gate_status=EXCLUDED.final_gate_status,final_gate_blockers=EXCLUDED.final_gate_blockers,
+                plan_reason=EXCLUDED.plan_reason,trade_entry_reason=EXCLUDED.trade_entry_reason,
+                execution_reason=EXCLUDED.execution_reason,paper_execution_reason=EXCLUDED.paper_execution_reason,
+                updated_at=now()
             """,(str(entity_key),ots,fr,mfe,mae))
         return True
     except Exception as ex:
@@ -1591,58 +1663,149 @@ def _v90_materialize_decision_episode(entity_key,outcome_payload,outcome_ts=None
              error=f'{type(ex).__name__}: {ex}')
         return False
 
-def _v90_backfill_decision_episodes(batch_size=500,max_batches=20,max_seconds=18.0):
+def _v90_backfill_decision_episodes(batch_size=256,max_batches=8,max_seconds=12.0):
+    """Insert missing episodes and enrich legacy rows with compact decision evidence.
+
+    Raw decision JSON is touched only here in bounded maintenance. Runtime
+    Learning 2.0 reads the materialized table without a ledger join.
+    """
     if not pg_enabled():
-        return {'status':'POSTGRES_REQUIRED','inserted':0}
-    started=time.time(); total=0; batches=0; err=None
+        return {'status':'POSTGRES_REQUIRED','inserted':0,'enriched':0}
+    started=time.time(); inserted=enriched=batches=0; err=None
+    limit=max(32,min(256,int(batch_size)))
     try:
         while batches<int(max_batches) and time.time()-started<float(max_seconds):
             with pg_connect() as c:
                 c.execute("SET statement_timeout TO '4s'")
-                rows=c.execute("""WITH picked AS (
+                missing=c.execute("""WITH picked AS (
                     SELECT o.entity_key,o.event_ts AS outcome_ts,o.payload AS op,
-                           d.event_ts AS decision_ts,d.asset,d.horizon,d.payload AS dp,d.model_version
+                           d.id AS decision_id,d.event_ts AS decision_ts,d.asset,d.horizon,
+                           d.payload AS dp,d.model_version
                     FROM ledger_events o
-                    JOIN ledger_events d
-                      ON d.entity_key=o.entity_key AND d.event_type='decision'
+                    JOIN LATERAL (
+                      SELECT id,event_ts,asset,horizon,payload,model_version
+                      FROM ledger_events d
+                      WHERE d.entity_key=o.entity_key AND d.event_type='decision'
+                      ORDER BY d.event_ts DESC,d.id DESC LIMIT 1
+                    ) d ON TRUE
                     LEFT JOIN v90_decision_episodes e ON e.entity_key=o.entity_key
-                    WHERE o.event_type='outcome'
-                      AND o.payload ? 'forward_return'
+                    WHERE o.event_type='outcome' AND o.payload ? 'forward_return'
                       AND e.entity_key IS NULL
-                    ORDER BY o.event_ts ASC
-                    LIMIT %s
+                    ORDER BY o.event_ts ASC LIMIT %s
                   )
                   INSERT INTO v90_decision_episodes(
-                    entity_key,decision_ts,outcome_ts,asset,horizon,regime,decision,
-                    forward_return,mfe,mae,model_version,knowledge_shadow_matches,updated_at
+                    entity_key,decision_id,decision_ts,outcome_ts,asset,horizon,regime,decision,
+                    forward_return,mfe,mae,model_version,knowledge_shadow_matches,
+                    setup_family,policy_hash,source_key,contract_id,candidate_direction,
+                    admission_eligible,final_gate_status,final_gate_blockers,
+                    plan_reason,trade_entry_reason,execution_reason,paper_execution_reason,updated_at
                   )
-                  SELECT entity_key,decision_ts,outcome_ts,asset,horizon,
+                  SELECT entity_key,decision_id,decision_ts,outcome_ts,asset,horizon,
                          COALESCE(dp->>'regime','UNKNOWN'),
                          COALESCE(dp->>'research_decision',dp->>'decision','NO_TRADE'),
                          (op->>'forward_return')::double precision,
                          CASE WHEN op ? 'mfe' THEN NULLIF(op->>'mfe','')::double precision END,
                          CASE WHEN op ? 'mae' THEN NULLIF(op->>'mae','')::double precision END,
-                         model_version,COALESCE(dp->'knowledge_shadow_matches','[]'::jsonb),now()
-                  FROM picked
-                  ON CONFLICT(entity_key) DO NOTHING
-                  RETURNING entity_key""",(max(50,min(1000,int(batch_size))),)).fetchall()
-            n=len(rows or []); total+=n; batches+=1
-            if n < max(50,min(1000,int(batch_size))):
+                         model_version,COALESCE(dp->'knowledge_shadow_matches','[]'::jsonb),
+                         COALESCE(dp->>'setup_family',dp->>'strategy_family',dp#>>'{trade_plan,setup}',''),
+                         COALESCE(dp#>>'{learning_provenance,policy_hash}',''),
+                         COALESCE(dp#>>'{learning_provenance,quote,source_identity,key}',
+                                  dp#>>'{trade_plan,timeframe_entry_context,source_identity,key}',''),
+                         COALESCE(dp#>>'{learning_provenance,quote,source_identity,contract_id}',
+                                  dp#>>'{trade_plan,timeframe_entry_context,source_identity,contract_id}',''),
+                         CASE WHEN COALESCE(dp->>'research_decision',dp->>'decision','') IN ('LONG','SHORT')
+                              THEN COALESCE(dp->>'research_decision',dp->>'decision')
+                              ELSE COALESCE(dp#>>'{trade_plan,timeframe_entry_context,event,direction}','') END,
+                         CASE
+                           WHEN COALESCE(dp->>'plan_eligible',dp#>>'{trade_plan,eligible}')='false'
+                             OR COALESCE(dp->>'trade_entry_eligible',dp#>>'{execution_eligibility,eligible}',
+                                         dp#>>'{execution_eligibility,paper_eligible}')='false' THEN false
+                           WHEN COALESCE(dp->>'plan_eligible',dp#>>'{trade_plan,eligible}')='true'
+                             AND COALESCE(dp->>'trade_entry_eligible',dp#>>'{execution_eligibility,eligible}',
+                                         dp#>>'{execution_eligibility,paper_eligible}')='true' THEN true
+                           ELSE NULL END,
+                         COALESCE(NULLIF(dp->>'final_gate_status',''),
+                           CASE WHEN COALESCE(dp->>'plan_eligible',dp#>>'{trade_plan,eligible}')='false'
+                                      OR COALESCE(dp->>'trade_entry_eligible',dp#>>'{execution_eligibility,eligible}',
+                                                  dp#>>'{execution_eligibility,paper_eligible}')='false'
+                                THEN 'BLOCK' ELSE '' END),
+                         COALESCE(dp->'final_gate_blockers',dp#>'{execution_eligibility,paper_source_blockers}','[]'::jsonb),
+                         COALESCE(NULLIF(dp->>'plan_reason',''),dp#>>'{trade_plan,reason}',''),
+                         COALESCE(NULLIF(dp->>'trade_entry_reason',''),dp#>>'{execution_eligibility,reason}',''),
+                         COALESCE(NULLIF(dp->>'execution_reason',''),dp#>>'{execution_eligibility,reason}',''),
+                         COALESCE(NULLIF(dp->>'paper_execution_reason',''),
+                                  dp#>>'{execution_eligibility,paper_execution_reason}',''),now()
+                  FROM picked ON CONFLICT(entity_key) DO NOTHING RETURNING entity_key""",(limit,)).fetchall()
+                inserted+=len(missing or [])
+
+                enriched_rows=c.execute("""WITH targets AS (
+                    SELECT e.entity_key,d.id AS decision_id,d.payload AS dp
+                    FROM v90_decision_episodes e
+                    JOIN LATERAL (
+                      SELECT id,payload FROM ledger_events d
+                      WHERE d.entity_key=e.entity_key AND d.event_type='decision'
+                      ORDER BY d.event_ts DESC,d.id DESC LIMIT 1
+                    ) d ON TRUE
+                    WHERE e.decision_id IS NULL
+                       OR e.policy_hash IS NULL
+                       OR e.candidate_direction IS NULL
+                    ORDER BY e.decision_ts DESC
+                    LIMIT %s
+                  )
+                  UPDATE v90_decision_episodes e SET
+                    decision_id=t.decision_id,
+                    setup_family=COALESCE(t.dp->>'setup_family',t.dp->>'strategy_family',t.dp#>>'{trade_plan,setup}',''),
+                    policy_hash=COALESCE(t.dp#>>'{learning_provenance,policy_hash}',''),
+                    source_key=COALESCE(t.dp#>>'{learning_provenance,quote,source_identity,key}',
+                                        t.dp#>>'{trade_plan,timeframe_entry_context,source_identity,key}',''),
+                    contract_id=COALESCE(t.dp#>>'{learning_provenance,quote,source_identity,contract_id}',
+                                         t.dp#>>'{trade_plan,timeframe_entry_context,source_identity,contract_id}',''),
+                    candidate_direction=CASE
+                      WHEN COALESCE(t.dp->>'research_decision',t.dp->>'decision','') IN ('LONG','SHORT')
+                        THEN COALESCE(t.dp->>'research_decision',t.dp->>'decision')
+                      ELSE COALESCE(t.dp#>>'{trade_plan,timeframe_entry_context,event,direction}','') END,
+                    admission_eligible=CASE
+                      WHEN COALESCE(t.dp->>'plan_eligible',t.dp#>>'{trade_plan,eligible}')='false'
+                        OR COALESCE(t.dp->>'trade_entry_eligible',t.dp#>>'{execution_eligibility,eligible}',
+                                    t.dp#>>'{execution_eligibility,paper_eligible}')='false' THEN false
+                      WHEN COALESCE(t.dp->>'plan_eligible',t.dp#>>'{trade_plan,eligible}')='true'
+                        AND COALESCE(t.dp->>'trade_entry_eligible',t.dp#>>'{execution_eligibility,eligible}',
+                                    t.dp#>>'{execution_eligibility,paper_eligible}')='true' THEN true
+                      ELSE NULL END,
+                    final_gate_status=COALESCE(NULLIF(t.dp->>'final_gate_status',''),
+                      CASE WHEN COALESCE(t.dp->>'plan_eligible',t.dp#>>'{trade_plan,eligible}')='false'
+                                 OR COALESCE(t.dp->>'trade_entry_eligible',t.dp#>>'{execution_eligibility,eligible}',
+                                             t.dp#>>'{execution_eligibility,paper_eligible}')='false'
+                           THEN 'BLOCK' ELSE '' END),
+                    final_gate_blockers=COALESCE(t.dp->'final_gate_blockers',
+                                                 t.dp#>'{execution_eligibility,paper_source_blockers}','[]'::jsonb),
+                    plan_reason=COALESCE(NULLIF(t.dp->>'plan_reason',''),t.dp#>>'{trade_plan,reason}',''),
+                    trade_entry_reason=COALESCE(NULLIF(t.dp->>'trade_entry_reason',''),
+                                                t.dp#>>'{execution_eligibility,reason}',''),
+                    execution_reason=COALESCE(NULLIF(t.dp->>'execution_reason',''),
+                                              t.dp#>>'{execution_eligibility,reason}',''),
+                    paper_execution_reason=COALESCE(NULLIF(t.dp->>'paper_execution_reason',''),
+                                                    t.dp#>>'{execution_eligibility,paper_execution_reason}',''),
+                    updated_at=now()
+                  FROM targets t WHERE e.entity_key=t.entity_key RETURNING e.entity_key""",(limit,)).fetchall()
+                enriched+=len(enriched_rows or [])
+            batches+=1
+            if len(missing or [])<limit and len(enriched_rows or [])<limit:
                 break
-            time.sleep(0.03)
+            time.sleep(0.02)
         status='OK'
     except Exception as ex:
-        err=f'{type(ex).__name__}: {ex}'
-        status='DEGRADED'
-        emit('decision_episode_backfill_error',inserted=total,batches=batches,error=err)
+        err=f'{type(ex).__name__}: {ex}'; status='DEGRADED'
+        emit('decision_episode_backfill_error',inserted=inserted,enriched=enriched,batches=batches,error=err)
     _v90_decision_episode_backfill_state.update({
-      'at':time.time(),'inserted':total,'status':status,'error':err,
+      'at':time.time(),'inserted':inserted,'enriched':enriched,'status':status,'error':err,
       'batches':batches,'duration_seconds':round(time.time()-started,3)
     })
-    if total:
-        emit('decision_episode_backfill_complete',inserted=total,batches=batches,
+    if inserted or enriched:
+        emit('decision_episode_backfill_complete',inserted=inserted,enriched=enriched,batches=batches,
              duration_seconds=round(time.time()-started,3))
     return dict(_v90_decision_episode_backfill_state)
+
 
 def pg_event(event_type,entity_key,payload,asset=None,horizon=None,event_ts=None):
     q=getattr(_v90_pg_batch_local,'queue',None)
