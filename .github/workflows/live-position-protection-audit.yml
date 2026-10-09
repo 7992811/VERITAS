@@ -14,10 +14,23 @@ jobs:
         shell: python
         run: |
           import json, urllib.request, time
-          url='https://veritas-intelligence-v1.onrender.com/api/v1/paper-portfolios?cb='+str(int(time.time()))
-          req=urllib.request.Request(url,headers={'Accept':'application/json','User-Agent':'VERITAS-live-protection-audit/1.0'})
-          with urllib.request.urlopen(req,timeout=45) as r:
-              data=json.load(r)
+          base='https://veritas-intelligence-v1.onrender.com/api/v1/paper-portfolios'
+          data={}
+          for attempt in range(8):
+              url=base+'?cb='+str(int(time.time()*1000))
+              req=urllib.request.Request(url,headers={'Accept':'application/json','User-Agent':'VERITAS-live-protection-audit/1.0'})
+              with urllib.request.urlopen(req,timeout=45) as r:
+                  data=json.load(r)
+              positions=sum(len(p.get('positions') or []) for p in data.get('portfolios') or [])
+              print('PROBE='+json.dumps({'attempt':attempt+1,'status':data.get('status'),
+                    'positions_complete':data.get('positions_complete'),
+                    'accounting_complete':data.get('accounting_complete'),
+                    'api_source':data.get('api_source'),'positions':positions},separators=(',',':')))
+              if (data.get('positions_complete') is not False and
+                      data.get('accounting_complete') is not False and
+                      positions>0 and data.get('position_protection_audit')):
+                  break
+              time.sleep(8)
           summary=data.get('position_protection_audit') or {}
           print('AUDIT_SUMMARY='+json.dumps(summary,ensure_ascii=False,separators=(',',':')))
           rows=[]
