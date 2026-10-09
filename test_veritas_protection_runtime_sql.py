@@ -101,7 +101,7 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
                 for table in ('paper_positions', 'paper_trades', 'paper_portfolios')]
 
     def test_native_no_exit_pass_is_bounded_and_preserves_ledger_and_witness(self):
-        rows = self.seed(17)
+        rows = self.seed(PR.BATCH_SIZE+1)
         q = position()[1]
         with self.connect() as c:
             trace = TracedConnection(c)
@@ -115,7 +115,8 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
             updates = [(sql, args) for sql, args in trace.statements if sql.startswith('UPDATE')]
             self.assertEqual(reads, [PR.PROTECTION_SQL+' ORDER BY portfolio_name,asset FOR UPDATE'])
             self.assertEqual(len(updates), 4)
-            self.assertEqual([len(json.loads(args[0])) for sql, args in updates], [16, 16, 1, 1])
+            self.assertEqual([len(json.loads(args[0])) for sql, args in updates],
+                             [PR.BATCH_SIZE, PR.BATCH_SIZE, 1, 1])
             self.assertTrue(all(len(args[0]) < 60000 for sql, args in updates))
             saved = {z['active_trade_id']: z for z in c.execute('SELECT * FROM paper_positions').fetchall()}
             trades = {z['trade_id']: z for z in c.execute('SELECT * FROM paper_trades').fetchall()}
@@ -144,7 +145,7 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
             self.assertEqual(self.contents(c), before)
 
     def test_native_bad_optional_chunk_recovers_every_healthy_row_and_next_chunk_commits(self):
-        rows = self.seed(17)
+        rows = self.seed(PR.BATCH_SIZE+1)
         patches = [(z['active_trade_id'], {'synthetic_mark': index}) for index, z in enumerate(rows)]
         patches[0][1]['poison'] = True
         with self.connect() as c:
@@ -162,7 +163,7 @@ class ProtectiveRuntimeSQLTests(unittest.TestCase):
             updates = [(sql, args) for sql, args in trace.statements if sql.startswith('UPDATE')]
             self.assertEqual(len(updates), 2+2*PR.BATCH_SIZE+2)
             self.assertEqual([len(json.loads(args[0])) for sql, args in updates],
-                             [16, 16]+[1, 1]*17)
+                             [PR.BATCH_SIZE, PR.BATCH_SIZE]+[1, 1]*PR.BATCH_SIZE+[1, 1])
 
     def test_native_repeated_ids_preserve_each_jsonb_merge_for_objects_arrays_and_scalars(self):
         z = self.seed()[0]
