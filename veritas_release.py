@@ -4,9 +4,9 @@ import os
 import veritas_canonical_constitution as CTC
 import veritas_owner_policy as VOP
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.8.29-owner-review-self-learning"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.29-owner-review-self-learning"
-UI_VERSION="veritas-ui-v9.1.8.29-owner-review-self-learning"
+PRODUCT_VERSION="veritas-max-product-v91.8.29-structural-breakout-owner-review-self-learning"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.29-structural-breakout-owner-review-self-learning"
+UI_VERSION="veritas-ui-v9.1.8.29-structural-breakout-owner-review-self-learning"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 def deployment_sha():
