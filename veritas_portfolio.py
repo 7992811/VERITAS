@@ -25,6 +25,8 @@ import veritas_learning_integrity as VLI
 import veritas_trade_diagnostics as VTD
 import veritas_trade_review as VTR
 import veritas_timeframe_management as VTM
+import veritas_portfolio_reporting as VPRPT
+import veritas_portfolio_admission as VPADM
 import veritas_startup_guard as VSG
 from veritas_portfolio_metrics import CLOSED_METRICS_SQL, closed_trade_metrics
 
@@ -8529,9 +8531,7 @@ def _report_r39(pg_connect):
             _v90r35_context_portfolio=old_portfolio
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),24)
-
 
 # VERITAS V90 EXECUTION SAFETY R40
 # Final portfolio invariant: no setup-specific sizing path may bypass the
@@ -8541,130 +8541,26 @@ _v90r40_base_report = _report_r39
 
 def _desired_fraction(row,policy,drawdown):
     gate=((row or {}).get('trade_plan') or {}).get('final_economics_gate') or {}
-    if gate and gate.get('status')=='BLOCK':
-        return 0.0
-    return _v90r40_base_desired_fraction(row,policy,drawdown)
+    return 0.0 if gate and gate.get('status')=='BLOCK' else _v90r40_base_desired_fraction(row,policy,drawdown)
 
 def _report_r40(pg_connect):
-    d=dict(_v90r40_base_report(pg_connect) or {})
-    d['execution_safety_r40']={
-      'version':VX.VERSION,
-      'paper_fill_model':'CONSERVATIVE_NORMALIZED_PAPER_FILL_V1',
-      'idempotent_client_order_ids':True,
-      'final_economics_gate':True,
-      'live_risk_profile':dict(VX.LIVE_RISK_PROFILE),
-      'live_broker_execution_enabled':False,
-      'objective_hard_constraint':CTC.OBJECTIVE_POLICY['hard_constraint'],
-      'objective_priority':list(CTC.OBJECTIVE_POLICY['priority_order']),
-      'principle':CTC.OBJECTIVE_POLICY['principle'],
-    }
-    return _jsonable(d)
-
+    return VPRPT.execution_safety_report(_v90r40_base_report(pg_connect), VX, CTC, _jsonable)
 
 # VERITAS V90 EXECUTION-QUALITY PAPER R41
-def paper_quantity_metadata(units):
-    try:
-        normalized=abs(float(units or 0.0))
-    except Exception:
-        normalized=0.0
-    return {
-      'normalized_units':normalized,
-      'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
-      'broker_quantity':None,
-      'broker_quantity_source':None,
-      'broker_ready_quantity':False,
-    }
+paper_quantity_metadata=VPRPT.paper_quantity_metadata
 
 # Final paper admission authority; source approval and trade economics are independent.
 _v90r41_base_admission = _signal_first_admission_r40
 _v90r41_base_report = _report_r40
 
 def _signal_first_admission(row,policy,drawdown):
-    row=row or {}
-    paper_ok=row.get('paper_eligible')
-    if str(row.get('asset') or '') in VX.PAPER_ASSETS:
-        source_gate=VX.paper_source_gate(str(row.get('asset') or ''),row)
-        paper_ok=source_gate['eligible'] and paper_ok is not False
-        row['paper_eligible']=paper_ok
-        row['paper_execution_reason']=source_gate['reason'] if paper_ok else source_gate['reason'] if not source_gate['eligible'] else 'paper_explicit_denial'
-    if not bool(paper_ok if paper_ok is not None else row.get('execution_eligible')):
-        return {'open':False,'fraction':0.0,'reason':'R42_PAPER_SOURCE_GATE',
-                'execution_reason':row.get('execution_reason'),
-                'paper_execution_reason':row.get('paper_execution_reason'),
-                'production_eligible':bool(row.get('production_eligible')),
-                'research_signal_preserved':True}
-    plan=row.get('trade_plan') or {}
-    econ=VX.entry_gate(row,row.get('price'),row.get('research_decision'),plan.get('initial_position_fraction',0.1))
-    if econ.get('status')=='BLOCK':
-        return {'open':False,'fraction':0.0,'reason':'R41_FINAL_ECONOMICS_GATE',
-                'economics_blockers':econ.get('blockers') or [],
-                'research_signal_preserved':True}
-    out=_v90r41_base_admission(row,policy,drawdown)
-    if isinstance(out,dict):
-        # R61.2 final sizing invariant: source + economics have already passed.
-        # Later learning layers may refine size, but cannot collapse a qualified
-        # Aggressive fresh/confirmed signal back to a Champion-style probe.
-        if str((policy or {}).get('mode') or '')=='AGGRESSIVE' and out.get('open'):
-            q=_v90r24_aggressive_quality(row)
-            conf=float(row.get('confidence') or row.get('_pwin') or 0.0)
-            floor=0.0
-            h=str(row.get('horizon') or '')
-            supporting=set(row.get('_supporting_horizons') or [])
-            # 5m entries are explicitly staged: 50% on the tactical trigger,
-            # 75% once 1h confirms, 100% only when 1h+4h confirm a SUPER/high-quality setup.
-            if h=='5m' and (q.get('fresh') or q.get('confirmed') or q.get('super')):
-                floor=0.50
-                if '1h' in supporting:
-                    floor=0.75
-                if '1h' in supporting and '4h' in supporting and q.get('super'):
-                    floor=1.00
-            elif q.get('super'):
-                floor=1.00 if (conf>=0.82 and q.get('independent',0)>=5 and q.get('rr',0)>=1.35 and q.get('alignment',0)>=3) else 0.75
-            elif q.get('fresh'):
-                floor=1.00 if (conf>=0.82 and q.get('independent',0)>=5 and q.get('rr',0)>=1.50 and q.get('alignment',0)>=3) else \
-                      0.75 if (conf>=0.72 and q.get('independent',0)>=4 and q.get('rr',0)>=1.30) else 0.50
-            elif q.get('confirmed'):
-                floor=0.75 if (q.get('independent',0)>=5 and q.get('rr',0)>=1.50) else \
-                      0.50 if (q.get('independent',0)>=4 and q.get('rr',0)>=1.30) else 0.0
-            if floor>0:
-                risk_cap=_v90r24_stop_risk_cap(row)
-                if risk_cap is not None:
-                    floor=min(floor,float(risk_cap))
-                maxf=float((policy or {}).get('max_fraction') or 5.0)
-                floor=_clip(_round_step(floor),0.05,maxf)
-                before=float(out.get('fraction') or 0.0)
-                if floor>before:
-                    out['fraction']=floor
-                    out['open']=True
-                    out['r61_fraction_before_floor']=before
-                    out['r61_sizing_floor_applied']=True
-                    out['r61_final_aggressive_floor']=floor
-                    out['r61_quality']=q
-        out['paper_source_quality']='PRODUCTION_GRADE' if row.get('production_eligible') else 'RESEARCH_GRADE'
-        out['paper_is_live_fill_evidence']=False
-    return out
+    return VPADM.legacy_paper_admission(
+        row, policy, drawdown, execution=VX, base_admission=_v90r41_base_admission,
+        aggressive_quality=_v90r24_aggressive_quality, stop_risk_cap=_v90r24_stop_risk_cap,
+        clip=_clip, round_step=_round_step)
 
 def report(pg_connect):
-    d=dict(_v90r41_base_report(pg_connect) or {})
-    for _p in d.get('portfolios') or []:
-        for _z in _p.get('positions') or []:
-            _payload=_v90j_json(_z.get('payload'))
-            _z.update(paper_quantity_metadata(_z.get('units')))
-            _payload.setdefault('quantity_semantics','NORMALIZED_PAPER_RETURN_UNITS')
-    d['paper_execution_quality_r41']={
-      'enabled':True,
-      'research_only_signals_can_open_positions':True,
-      'requires_paper_eligible':True,
-      'requires_production_eligible':False,
-      'requires_final_economics_gate':True,
-      'pnl_interpretation':'research-grade or execution-grade normalized paper P&L; never broker-fill proof',
-      'quantity_semantics':'NORMALIZED_PAPER_RETURN_UNITS',
-      'normalized_units_are_broker_quantity':False,
-      'broker_quantity_requires_instrument_registry':True,
-      'blocked_assets_without_sufficient_feed':'paper may use current research-grade feeds; live capital remains production-gated',
-    }
-    return _jsonable(d)
-
+    return VPRPT.paper_execution_quality_report(_v90r41_base_report(pg_connect), _v90j_json, _jsonable)
 # Canonical runtime binding is import-order safe. When portfolio is imported
 # from inside veritas_portfolio_runtime, the runtime is only partially initialized;
 # it patches these bindings after its final authority objects are constructed.

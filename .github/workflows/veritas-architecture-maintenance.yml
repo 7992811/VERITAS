@@ -1,0 +1,28 @@
+name: VERITAS Architecture Maintenance Invariants
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  architecture-maintenance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - name: Install runtime dependencies
+        run: pip install -r requirements-intelligence.txt
+      - name: Compile extracted portfolio modules
+        run: python -m py_compile veritas_portfolio.py veritas_portfolio_reporting.py veritas_portfolio_admission.py veritas_maintenance.py
+      - name: Frozen architecture ceilings
+        run: python tools/architecture_guard.py
+      - name: Periodic maintenance fairness and backoff
+        run: python -m unittest -v test_veritas_maintenance_periodic.py
