@@ -15,6 +15,7 @@ MARK_FIELDS = (
     'price_source_lock', 'contract_identity', 'entry_primary_source',
     'entry_contract_secid', 'source_locked_mark', 'entry_execution_observed_at',
     'entry_market_observed_at', 'entry_execution_model',
+    'last_mark_price', 'last_mark_at', 'price_source_status',
 )
 MARK_SQL = position_sql(MARK_FIELDS)
 
