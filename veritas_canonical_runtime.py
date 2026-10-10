@@ -127,7 +127,11 @@ def paper_risk_governor(policy, drawdown):
 
 def _fraction(policy, drawdown, soft=False):
     p=policy or {}
-    super_sig=_tier(p.get("_row") or {}) in ("SUPER_LONG","SUPER_SHORT")
+    row=p.get("_row") or {}
+    if str(p.get("mode") or "")=="CURRENCY":
+        super_sig=str(row.get("_currency_role_strength") or "") in ("STRONG","GAME_CHANGER")
+    else:
+        super_sig=_tier(row) in ("SUPER_LONG","SUPER_SHORT")
     key=("probe_super" if super_sig else "probe_normal") if soft else ("initial_super" if super_sig else "initial_normal")
     f=float(p.get(key,0.05 if soft else 0.10))
     rg=paper_risk_governor(p,drawdown)
@@ -224,6 +228,28 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
 
     p["_row"]=work
     game_changer=VTDE.event_impulse_assess(work,d)
+    mode=str(p.get("mode") or "")
+    currency_role=None
+    if mode=="CURRENCY":
+        work["_currency_game_changer"]=bool(
+            game_changer.get("eligible") and game_changer.get("immediate_max"))
+        currency_role=VROLE.gate(work,mode)
+        if not currency_role.get("eligible"):
+            return {"open":False,"fraction":0.0,"reason":currency_role["reason"],
+                    "hard_veto":True,"role_gate":currency_role,"canonical_stage":"THESIS"}
+        work["_currency_role_strength"]=currency_role.get("strength")
+        p["_row"]=work
+        plan.update(
+            currency_entry_mode=currency_role.get("entry_mode"),
+            currency_role_strength=currency_role.get("strength"),
+            currency_probability_required=currency_role.get("probability_required"),
+            currency_probability_bypass=currency_role.get("probability_bypass",False),
+            currency_probability_threshold=currency_role.get("threshold"),
+            currency_strong_threshold=currency_role.get("strong_threshold"),
+            currency_independent_evidence=currency_role.get("independent"),
+            currency_min_independent=currency_role.get("min_independent"),
+        )
+        work["trade_plan"]=plan
     full_fraction,rg=_fraction(p,drawdown,soft=False)
     # Owner P0: verified quote + senior structural break + forming move above
     # completed multi-timeframe volatility is already the confirmation. In
@@ -266,7 +292,7 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
                 "economics_blockers":econ_blockers,"hard_economics_blockers":hard_econ,
                 "economics":economics,"risk_governor":rg,"canonical_stage":"ECONOMICS"}
 
-    role=VROLE.gate(work,str(p.get("mode") or ""))
+    role=currency_role or VROLE.gate(work,str(p.get("mode") or ""))
     if not role.get("eligible"):
         return {"open":False,"fraction":0.0,"reason":role["reason"],"hard_veto":True,"role_gate":role,"canonical_stage":"THESIS"}
     fraction=full_fraction
@@ -283,6 +309,7 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
             "hard_veto":False,"soft_blockers":list(dict.fromkeys(soft)),"economics":economics,
             "risk_governor":rg,"stop_risk_budget":stop_budget,
             "event_impulse":game_changer if game_changer.get('eligible') else None,
+            "role_gate":role,
             "trend_event":event,"execution_timing":chase,
             "canonical_stage":"SIZE","canonical_policy_version":CTC.VERSION,
             "prepared_plan":dict(plan),"structural_policy_version":plan.get('structural_policy_version')}
