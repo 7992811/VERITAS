@@ -4957,11 +4957,15 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         # The live mark belongs on paper_positions. Per-tick source evidence is
         # already held by the quote/observation paths; rewriting paper_trades on
         # every mark added lock time without changing accounting.
+        try:
+            mark_unchanged=float(z.get('last_price'))==float(safe_prices[asset])
+        except (TypeError,ValueError,OverflowError):
+            mark_unchanged=False
         if audit:
             c.execute("UPDATE paper_positions SET last_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
                       "WHERE portfolio_name=%s AND asset=%s",
                       (safe_prices[asset],json.dumps(audit),name,asset))
-        else:
+        elif not mark_unchanged:
             c.execute("UPDATE paper_positions SET last_price=%s "
                       "WHERE portfolio_name=%s AND asset=%s AND last_price IS DISTINCT FROM %s",
                       (safe_prices[asset],name,asset,safe_prices[asset]))
@@ -4977,13 +4981,14 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             VTM.apply_trailing(c,name,z,safe_summary,q,ts)
             safe_candidates,safe_summary=VTM.filter_lower_context(z,safe_candidates,safe_summary)
         safe_candidates,safe_summary,guard=VTG.guard_open_position(c,z,safe_candidates,safe_summary,now=ts)
-        if guard.get('active'):
+        if guard.get('active') and payload.get('ctc_senior_thesis_guard')!=guard:
             patch={'ctc_senior_thesis_guard':guard}
+            encoded_guard=json.dumps(patch)
             c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
-                      (json.dumps(patch),name,asset))
+                      (encoded_guard,name,asset))
             if z.get('active_trade_id'):
                 c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
-                          (json.dumps(patch),z['active_trade_id']))
+                          (encoded_guard,z['active_trade_id']))
     rows = z = None
     return _r80_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,VC.COMMISSION_RATE,safe_summary)
 
