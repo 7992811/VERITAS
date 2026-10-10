@@ -275,6 +275,35 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(result.code, "DAY_EXECUTION_EVIDENCE_PRESENT")
         self.assertEqual(self.transport.count("PostOrder"), 0)
 
+    def test_generic_broker_report_uses_one_based_request_page(self):
+        calls = []
+        def broker_report(body):
+            calls.append(body)
+            if "generateBrokerReportRequest" in body:
+                return Response({"generateBrokerReportResponse": {"taskId": "report-task-generic"}})
+            self.assertEqual(body["getBrokerReportRequest"]["page"], 1)
+            return Response({"getBrokerReportResponse": {
+                "taskId": "report-task-generic", "itemsCount": 0, "pagesCount": 1,
+                "page": 0, "brokerReport": []}})
+        self.transport.handlers["GetBrokerReport"] = broker_report
+        result = self.adapter.get_broker_report(
+            ACCOUNT, UID, from_time="2026-10-01T00:00:00+00:00",
+            to_time="2026-10-02T00:00:00+00:00")
+        self.assertTrue(result["retrieval_complete"])
+        self.assertEqual(result["pages"], 1)
+        self.assertEqual(self.transport.count("PostOrder"), 0)
+
+    def test_broker_report_recovery_defers_too_fresh_period_without_network(self):
+        sent = datetime.now(timezone.utc) - timedelta(days=2)
+        result = self.adapter.recover_submission_from_broker_report(
+            ACCOUNT, UID, CLIENT, "broker-order-too-fresh-report", "BUY", 2, sent,
+            ticker="CNYRUBF", lot_size=1, time_in_force="TIME_IN_FORCE_DAY",
+            limit_price=Decimal("12.345"))
+        self.assertEqual(result.status, "UNKNOWN")
+        self.assertEqual(result.code, "BROKER_REPORT_PERIOD_NOT_AVAILABLE_YET")
+        self.assertEqual(self.transport.count("GetBrokerReport"), 0)
+        self.assertEqual(self.transport.count("PostOrder"), 0)
+
     def test_expired_day_order_recovers_zero_fill_from_complete_report_and_inactive_orders(self):
         sent = datetime.now(timezone.utc) - timedelta(days=2)
         broker_id = "broker-order-expired-day"
