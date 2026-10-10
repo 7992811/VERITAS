@@ -219,6 +219,16 @@ class AdapterTests(unittest.TestCase):
                     self.assertIs(call["body"][flag], False)
                 self.assertFalse(adapter.capabilities()["execution_enabled"])
 
+    def test_broker_report_recovery_accepts_legacy_fak_alias(self):
+        result = self.adapter.recover_submission_from_broker_report(
+            ACCOUNT, UID, CLIENT, "broker-order-legacy-fak", "BUY", 2,
+            datetime.now(timezone.utc), ticker="CNYRUBF", lot_size=1,
+            time_in_force="FILL_AND_KILL", limit_price=D("12.345"))
+        self.assertEqual(result.status, "UNKNOWN")
+        self.assertEqual(result.code, "BROKER_REPORT_RECOVERY_WINDOW_NOT_READY")
+        self.assertEqual(self.transport.count("PostOrder"), 0)
+        self.assertEqual(self.transport.count("GetBrokerReport"), 0)
+
     def test_operation_id_order_state_lookup_does_not_claim_exchange_id_type(self):
         operation_id = "current-operation-order-1"
         self.transport.states[operation_id] = order(
