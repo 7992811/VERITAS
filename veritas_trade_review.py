@@ -1,6 +1,7 @@
 """Compact closed-trade review helpers; no market I/O and no trading authority."""
 from __future__ import annotations
 import math
+import veritas_trade_postmortem as POST
 
 CLOSED_EXTRA_FIELDS=(
     "initial_stop_price","exit_position_stop_price","exit_trailing_stop_price",
@@ -47,3 +48,23 @@ def lifetime_mfe(payload):
 def closed_trade_fields(payload):
     p=payload if isinstance(payload,dict) else {}
     return {field:p.get(field) for field in CLOSED_EXTRA_FIELDS}
+
+
+def attach_postmortem(trade,decision_payload,setup_payload,diagnosis,raw_payload):
+    snapshot=POST.entry_snapshot(trade,decision_payload,setup_payload,diagnosis,raw_payload=raw_payload)
+    trade["entry_analysis_snapshot"]=snapshot
+    trade["self_learning_review"]=POST.review(trade,diagnosis,snapshot,raw_payload=raw_payload)
+    return trade
+
+def postmortem_report_fields(rows):
+    items=[x for x in (rows or []) if x.get("self_learning_review")]
+    return {
+        "self_learning_trades":items[:100],
+        "self_learning_review_count":len(items),
+        "self_learning_owner_review_queue":[
+            {"trade_id":x.get("trade_id"),"portfolio_name":x.get("portfolio_name"),
+             "asset":x.get("asset"),"closed_at":x.get("closed_at"),"proposal":proposal}
+            for x in items for proposal in ((x.get("self_learning_review") or {}).get("proposals") or [])
+            if proposal.get("status")=="OWNER_REVIEW_REQUIRED"
+        ][:100],
+    }
