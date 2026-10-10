@@ -524,8 +524,18 @@ class CurrencyTradingCoordinator:
                                     result = replace(recovered, broker_order_id=proposal["broker_order_id"])
                                     lookup = "operations_history_request_uuid"
                                 else:
-                                    result = recovered
-                                    lookup = "operations_history"
+                                    spec = terms.get("contract_spec") or {}
+                                    report_recovery = self.adapter.recover_submission_from_broker_report(
+                                        self.account_id, terms.get("instrument_uid"),
+                                        proposal["client_order_id"], proposal["broker_order_id"],
+                                        terms.get("side"), integer(terms["lots"]),
+                                        proposal.get("send_started_at") or proposal.get("approved_at")
+                                        or proposal.get("created_at"),
+                                        ticker=spec.get("ticker"), lot_size=integer(spec.get("lot_size")),
+                                        time_in_force=terms.get("time_in_force"),
+                                        limit_price=terms.get("limit_price"))
+                                    result = report_recovery
+                                    lookup = "broker_report"
                     else:
                         # Read-only recovery path. It converts an explicit broker 404
                         # into an UNKNOWN OrderResult with a stable diagnostic code
