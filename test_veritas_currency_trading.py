@@ -588,6 +588,58 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.assertEqual(self.ingested[-1][1].broker_order_id, original_broker_id)
         self.assertEqual(self.transport.count("PostOrder"), 1)
 
+    def test_acknowledged_expired_day_zero_fill_operations_proof_clears_reconciliation_without_resubmit(self):
+        approved = self.approve()
+        terms = dict(approved["terms"])
+        terms["time_in_force"] = "TIME_IN_FORCE_DAY"
+        # Keep the durable proposal coherent with the historical DAY order.
+        with self.repo.connect() as conn:
+            conn.execute("UPDATE trade_approvals SET terms_json = ? WHERE proposal_id = ?",
+                         (A._json(terms), approved["proposal_id"]))
+        approved = self.repo.get(approved["proposal_id"])
+        self.transport.handlers["PostOrder"] = lambda body: Response(
+            order(client=body["orderId"], timeInForce="TIME_IN_FORCE_DAY"))
+        sent = self.coordinator.execute_approved(approved["proposal_id"])
+        self.assertTrue(sent["ok"], sent)
+        held = self.repo.get(approved["proposal_id"])
+        self.assertEqual(held["status"], "ACKNOWLEDGED")
+        original_broker_id = held["broker_order_id"]
+
+        unresolved = T.OrderResult(
+            approved["client_order_id"], None, UID, "BUY", 2, None,
+            "UNKNOWN", "UNKNOWN", code="ORDER_NOT_FOUND_UNRESOLVED")
+        history_unresolved = T.OrderResult(
+            approved["client_order_id"], None, UID, "BUY", 2, None,
+            "UNKNOWN", "UNKNOWN", code="HISTORICAL_OPERATION_STATES_NOT_FOUND")
+        proof = T.OrderResult(
+            approved["client_order_id"], original_broker_id, UID, "BUY", 2, 0,
+            "CANCELLED", "ACCEPTED",
+            broker_status="EXECUTION_REPORT_STATUS_CANCELLED",
+            executions=(), executed_commission=D("0"), commission_currency="RUB",
+            code="OPERATIONS_PROVE_ZERO_FILL_EXPIRED_DAY",
+            order_type="ORDER_TYPE_LIMIT", limit_price=D("12.345"),
+            time_in_force="TIME_IN_FORCE_DAY")
+
+        with patch.object(self.adapter, "get_order",
+                          side_effect=T.TradingError("BROKER_HTTP_400")), \
+             patch.object(self.adapter, "reconcile_submission", return_value=unresolved), \
+             patch.object(self.adapter, "recover_submission_from_operations",
+                          return_value=history_unresolved), \
+             patch.object(self.adapter, "recover_expired_day_zero_fill_from_operations",
+                          return_value=proof) as zero_fill, \
+             patch.object(self.adapter, "recover_submission_from_broker_report") as report:
+            result = self.coordinator.reconcile()
+
+        self.assertEqual(result[0]["code"], "CANCELLED")
+        self.assertEqual(result[0]["lookup"], "expired_day_operations_proof")
+        zero_fill.assert_called_once()
+        report.assert_not_called()
+        durable = self.repo.get(approved["proposal_id"])
+        self.assertEqual(durable["status"], "CANCELLED")
+        self.assertTrue(durable["execution_reconciled"])
+        self.assertEqual(durable["filled_lots"], 0)
+        self.assertEqual(self.transport.count("PostOrder"), 1)
+
     def test_acknowledged_fak_recovers_terminal_cancel_from_broker_report_without_resubmit(self):
         approved = self.approve()
         self.transport.handlers["PostOrder"] = lambda body: Response(
