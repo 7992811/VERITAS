@@ -159,8 +159,8 @@ class R46WrapperBorrowingTests(unittest.TestCase):
                          positions[0]['payload']['r46_giveback_harvest_done']))
             return {'status':'core_complete'}
         namespace={'_portfolio_rows':VP._portfolio_rows,'_mark_nav':mark,
-                   '_v90j_update_excursions':lambda *args:None,
-                   '_v90r46_mark_trend_hold':lambda *args:None,
+                   '_v90j_update_excursions':lambda *args,**kwargs:None,
+                   '_v90r46_mark_trend_hold':lambda *args,**kwargs:None,
                    '_v90r46_giveback_harvest':R._v90r46_giveback_harvest,
                    '_v90r46_base_step_one':delegate}
         step=r46_wrapper(namespace,legacy)
