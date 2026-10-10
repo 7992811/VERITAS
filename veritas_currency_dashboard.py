@@ -288,6 +288,7 @@ def _project_episodes(account, fills, fees, funding):
                     "exit_reason": fill.get("exit_reason"),
                     "manual": fill.get("manual") is True,
                     "currency_excursion_snapshot": fill.get("currency_excursion_snapshot") or {},
+                    "exit_trigger_context": fill.get("exit_trigger_context") or {},
                 }
                 closed.append(active)
                 active = None
@@ -430,6 +431,10 @@ def _clean_episode(episode, multiplier, allocation, environment):
             "exit_reason": reason,
             "currency_excursion_snapshot": excursion,
             "currency_live_management_shadow": shadow_dynamic_tp,
+            "currency_dynamic_tp_shadow_at_exit": (
+                (exit_meta.get("exit_trigger_context") or {}).get("currency_dynamic_tp_shadow")
+                if isinstance(exit_meta.get("exit_trigger_context"), dict) else None
+            ),
             "management_evidence_status": (
                 "DURABLE_LIVE_PATH" if mfe_pct is not None and mae_pct is not None
                 else "INCOMPLETE_LIVE_PATH"
@@ -735,7 +740,8 @@ def read_live_currency_on(connection, *, environment=None, checked_at=None, max_
                        metadata->>'exit_reason' AS exit_reason,
                        (metadata ? 'manual_request' OR metadata ? 'manual_owner_user_id') AS manual,
                        COALESCE(metadata->>'entry_signal_tier',metadata->>'signal_tier') AS signal_tier,
-                       metadata->'currency_excursion_snapshot' AS currency_excursion_snapshot
+                       metadata->'currency_excursion_snapshot' AS currency_excursion_snapshot,
+                       metadata->'exit_trigger_context' AS exit_trigger_context
                 FROM {schema}.{FILLS}
                 WHERE account_id=%s AND instrument_uid=%s
                 ORDER BY executed_at,trade_id""",
