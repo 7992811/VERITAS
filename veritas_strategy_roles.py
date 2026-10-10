@@ -25,6 +25,48 @@ def gate(row, mode):
         return {'eligible':True,'role':'UNKNOWN_COMPATIBILITY'}
     import veritas_structural_breakout as SB
     context=row.get('timeframe_entry_context') or (row.get('trade_plan') or {}).get('timeframe_entry_context') or {}
+    if mode == 'CURRENCY':
+        direction, structure, state, score, independent = _features(row)
+        horizon = str(row.get('horizon') or '')
+        event = context.get('event') or {}
+        proof = SB.validate_event(event,context.get('source_identity')) if SB.applies(context) else {'eligible':False}
+        base = {'role':rule['name'],'candidate_variant':'CURRENCY',
+                'threshold':rule['threshold'],'strong_threshold':rule['strong_threshold'],
+                'min_independent':rule['min_independent'],'independent':independent,
+                'horizon':horizon,'direction':direction}
+        if str(row.get('asset') or '') != 'CNYRUBF':
+            return dict(base, eligible=False, reason='CURRENCY_PORTFOLIO_ASSET_MISMATCH')
+        if horizon not in rule['horizons']:
+            return dict(base, eligible=False, reason='CURRENCY_ROLE_TIMEFRAME_NOT_ALLOWED')
+        if not proof.get('eligible'):
+            return dict(base, eligible=False, reason='CURRENCY_STRUCTURAL_EVENT_REQUIRED')
+        # Only the canonical event-impulse assessor may grant this bypass. A
+        # raw signal label or an event flag alone is never enough.
+        if row.get('_currency_game_changer') is True:
+            return dict(base, eligible=True, reason='CURRENCY_GAME_CHANGER_STRUCTURAL_ENTRY',
+                        entry_mode='GAME_CHANGER', strength='GAME_CHANGER',
+                        probability_required=False, probability_bypass=True,
+                        structure_basis='VERIFIED_QUOTE_BREAK_WITH_PROTECTED_PARENT')
+        calibrated=row.get('calibrated_probability')
+        try:
+            probability=float(calibrated)
+            if not math.isfinite(probability):
+                raise ValueError
+        except (TypeError,ValueError):
+            return dict(base, eligible=False, reason='CURRENCY_CALIBRATED_PROBABILITY_REQUIRED',
+                        entry_mode='NORMAL', probability_required=True)
+        base['calibrated_probability']=probability
+        if probability < float(rule['threshold']):
+            return dict(base, eligible=False, reason='CURRENCY_PROBABILITY_BELOW_THRESHOLD',
+                        entry_mode='NORMAL', probability_required=True)
+        if independent < int(rule.get('min_independent',0)):
+            return dict(base, eligible=False, reason='CURRENCY_INDEPENDENT_EVIDENCE_REQUIRED',
+                        entry_mode='NORMAL', probability_required=True)
+        strength='STRONG' if probability >= float(rule['strong_threshold']) else 'NORMAL'
+        return dict(base, eligible=True, reason='CURRENCY_NORMAL_STRUCTURAL_ENTRY',
+                    entry_mode='NORMAL', strength=strength, probability_required=True,
+                    probability_bypass=False,
+                    structure_basis='VERIFIED_QUOTE_BREAK_WITH_PROTECTED_PARENT')
     if SB.applies(context):
         event=context.get('event') or {}
         proof=SB.validate_event(event,context.get('source_identity'))
