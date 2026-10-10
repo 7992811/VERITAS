@@ -553,6 +553,41 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "FILLED")
         self.assertEqual(self.transport.count("PostOrder"), 1)
 
+    def test_acknowledged_order_recovers_through_operations_uuid_and_preserves_canonical_broker_id(self):
+        approved = self.approve()
+        self.transport.handlers["PostOrder"] = lambda body: Response(
+            order(client=body["orderId"], timeInForce=body["timeInForce"]))
+        sent = self.coordinator.execute_approved(approved["proposal_id"])
+        self.assertTrue(sent["ok"], sent)
+        held = self.repo.get(approved["proposal_id"])
+        original_broker_id = held["broker_order_id"]
+        self.assertEqual(held["status"], "ACKNOWLEDGED")
+
+        unresolved = T.OrderResult(
+            approved["client_order_id"], None, UID, "BUY", 2, None,
+            "UNKNOWN", "UNKNOWN", code="ORDER_NOT_FOUND_UNRESOLVED")
+        recovered = T.OrderResult(
+            approved["client_order_id"], "current-operation-id", UID, "BUY", 2, 2,
+            "FILLED", "ACCEPTED", broker_status="EXECUTION_REPORT_STATUS_FILL",
+            order_type="ORDER_TYPE_LIMIT", limit_price=D("12.345"),
+            time_in_force="TIME_IN_FORCE_FILL_AND_KILL")
+
+        with patch.object(self.adapter, "get_order",
+                          side_effect=T.TradingError("BROKER_NOT_FOUND", not_found=True)), \
+             patch.object(self.adapter, "reconcile_submission", return_value=unresolved), \
+             patch.object(self.adapter, "recover_submission_from_operations",
+                          return_value=recovered) as history:
+            result = self.coordinator.reconcile()
+
+        self.assertEqual(result[0]["code"], "FILLED")
+        self.assertEqual(result[0]["lookup"], "operations_history_request_uuid")
+        history.assert_called_once()
+        durable = self.repo.get(approved["proposal_id"])
+        self.assertEqual(durable["status"], "FILLED")
+        self.assertEqual(durable["broker_order_id"], original_broker_id)
+        self.assertEqual(self.ingested[-1][1].broker_order_id, original_broker_id)
+        self.assertEqual(self.transport.count("PostOrder"), 1)
+
     def test_unknown_first_binding_requires_uuid_returned_by_broker_receipt(self):
         approved = self.approve()
         self.transport.handlers["PostOrder"] = TimeoutError("synthetic lost reply")
