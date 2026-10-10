@@ -485,18 +485,34 @@ class CurrencyTradingCoordinator:
             for proposal in pending:
                 terms = proposal.get("terms") or {}
                 proposal_id = proposal["proposal_id"]
+                row_status = proposal.get("status")
                 if terms.get("account_id") != self.account_id:
                     continue
                 if terms.get("execution_environment") != self.adapter.environment:
-                    results.append({"proposal_id": proposal_id, "code": "EXECUTION_ENVIRONMENT_CHANGED"})
+                    results.append({"proposal_id": proposal_id, "code": "EXECUTION_ENVIRONMENT_CHANGED",
+                                    "row_status": row_status})
                     continue
                 try:
                     if proposal.get("broker_order_id"):
                         result = self.adapter.get_order(self.account_id, proposal["broker_order_id"])
+                        lookup = "broker_order_id"
                     else:
-                        result = self.adapter.get_order(self.account_id, client_order_id=proposal["client_order_id"])
+                        # Read-only recovery path. It converts an explicit broker 404
+                        # into an UNKNOWN OrderResult with a stable diagnostic code
+                        # instead of erasing the distinction inside a broad except.
+                        result = self.adapter.reconcile_submission(
+                            self.account_id, proposal["client_order_id"])
+                        lookup = "client_order_id"
                     if result.status == "UNKNOWN" or result.lots_executed is None:
-                        results.append({"proposal_id": proposal_id, "code": "BROKER_RESULT_UNKNOWN"})
+                        detail = getattr(result, "code", None)
+                        if not isinstance(detail, str) or re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", detail) is None:
+                            detail = "BROKER_RESULT_UNKNOWN"
+                        results.append({"proposal_id": proposal_id,
+                                        "code": "EXECUTION_RECONCILIATION_PENDING",
+                                        "detail_code": detail,
+                                        "row_status": row_status,
+                                        "lookup": lookup,
+                                        "broker_order_bound": bool(proposal.get("broker_order_id"))})
                         continue
                     if (not result.broker_order_id
                             or (proposal.get("broker_order_id") and result.broker_order_id != proposal["broker_order_id"])
@@ -514,7 +530,19 @@ class CurrencyTradingCoordinator:
                     if result.status in ("FILLED", "CANCELLED", "REJECTED", "BROKER_REJECTED"):
                         self.repository.mark_execution_reconciled(proposal_id, result.broker_order_id,
                                                                    result.lots_executed)
-                    results.append({"proposal_id": proposal_id, "code": result.status})
-                except Exception:
-                    results.append({"proposal_id": proposal_id, "code": "EXECUTION_RECONCILIATION_PENDING"})
+                    results.append({"proposal_id": proposal_id, "code": result.status,
+                                    "row_status": row_status, "lookup": lookup,
+                                    "broker_order_bound": bool(proposal.get("broker_order_id"))})
+                except Exception as exc:
+                    detail = getattr(exc, "code", None)
+                    if detail is None and isinstance(exc, TradePlanBlocked):
+                        detail = str(exc)
+                    if not isinstance(detail, str) or re.fullmatch(r"[A-Z][A-Z0-9_]{0,79}", detail) is None:
+                        detail = "BROKER_RECONCILIATION_EXCEPTION"
+                    results.append({"proposal_id": proposal_id,
+                                    "code": "EXECUTION_RECONCILIATION_PENDING",
+                                    "detail_code": detail,
+                                    "row_status": row_status,
+                                    "lookup": "broker_order_id" if proposal.get("broker_order_id") else "client_order_id",
+                                    "broker_order_bound": bool(proposal.get("broker_order_id"))})
         return results
