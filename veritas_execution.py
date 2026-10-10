@@ -216,8 +216,10 @@ def _structural_economics_terms(asset, plan, direction, entry, execution_mode, n
             return failed('STRUCTURAL_ECONOMICS_QUOTE_MISMATCH')
     ladder = event.get('target_ladder') or []
     weights = [1.0] if len(ladder) == 1 else list(configured['target_fractions'])
+    game_changer = bool(event.get('game_changer_extreme') is True and p.get('target_reference_only') is True)
+    expected_target = event.get('runner_target_price') if game_changer else event.get('target_price')
     if (len(ladder) not in (1, 2) or p.get('target_ladder') != ladder
-            or p.get('target_price') != event.get('target_price')
+            or p.get('target_price') != expected_target
             or p.get('runner_target_price', event.get('runner_target_price')) != event.get('runner_target_price')
             or any(_num(step.get('fraction')) != weight for step, weight in zip(ladder, weights))):
         return failed('STRUCTURAL_TARGET_LADDER_PROVENANCE_MISMATCH')
@@ -228,8 +230,12 @@ def _structural_economics_terms(asset, plan, direction, entry, execution_mode, n
                   scope='PAPER_PORTFOLIOS', structural_policy_version=configured['version'],
                   event_id=event['event_id'], event_proof_hash=event['proof_hash'],
                   evaluated_at=clock.isoformat(), minimum_reward_risk=0.0,
-                  net_rr_role='DIAGNOSTIC_WITH_POSITIVE_WEIGHTED_TARGET_ECONOMICS')
-    return policy, deepcopy(ladder), [], deepcopy(ctx)
+                  net_rr_role='DIAGNOSTIC_WITH_POSITIVE_WEIGHTED_TARGET_ECONOMICS',
+                  target_reference_only=game_changer,fixed_take_profit_deferred=game_changer)
+    execution_ladder=([dict(price=float(event['runner_target_price']),fraction=1.0,
+                            kind='EVENT_IMPULSE_REFERENCE')]
+                      if game_changer else deepcopy(ladder))
+    return policy, execution_ladder, [], deepcopy(ctx)
 
 
 def economics_gate(asset: str, plan: Optional[Dict[str, Any]], *,
@@ -278,6 +284,13 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]], *,
         buy = direction == "LONG"
         entry_model = simulated_fill(asset, "BUY" if buy else "SELL_SHORT", entry,
                                      fraction, bid=p.get("best_bid"), ask=p.get("best_ask"))
+        if p.get("execution_style")=="MARKETABLE_LIMIT_NEAREST_OFFER_SWEEP":
+            entry_model.update(execution_style=p["execution_style"],
+                fill_confirmation_required=bool(p.get("fill_confirmation_required",True)),
+                partial_fill_policy=p.get("partial_fill_policy"),reprice_policy=p.get("reprice_policy"),
+                execution_instrument_required=bool(p.get("execution_instrument_required",True)),
+                orderbook_price_source=("BEST_ASK" if buy else "BEST_BID") if entry_model.get("quote_valid") else None,
+                full_fill_assumed=False,model_only=True)
         entry_fill = entry_model["fill_price"]
         # The current exit engine uses an adverse reference-price fill; use that
         # same model here, including size impact and both commission legs.
@@ -362,6 +375,11 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]], *,
         "weighted_target_price":weighted_target if weighted else None,
         "modeled_weighted_target_fill":weighted_fill if weighted else None,
         "weighted_target_distance_pct":weighted_move if weighted else None,
+        "execution_style":p.get("execution_style"),
+        "fill_confirmation_required":bool(p.get("fill_confirmation_required",False)),
+        "partial_fill_policy":p.get("partial_fill_policy"),"reprice_policy":p.get("reprice_policy"),
+        "execution_instrument_required":bool(p.get("execution_instrument_required",False)),
+        "event_news_check":deepcopy(p.get("event_news_check")),
         "principle": "Actual target/stop economics after adverse fills, commission and funding.",
     }
 
