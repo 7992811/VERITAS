@@ -19,7 +19,7 @@ const context=vm.createContext({
   fetch:async()=>({ok:false,status:503,json:async()=>({})}),
 });
 vm.runInContext(script.replace(/\}\)\(\);\s*$/,
-  'globalThis.ui={st,renderReview,reviewSetTab,reviewTradeModel,aggregateMissed,aggregateClosedTradeEvidence,renderAutonomousTradeLearning,hypothesisRuleText};})();'),
+  'globalThis.ui={st,renderReview,reviewSetTab,reviewTradeModel,aggregateMissed,aggregateClosedTradeEvidence,renderAutonomousTradeLearning,learningPriorityQueue,renderLearningPriorityQueue,hypothesisRuleText};})();'),
   context,{timeout:2000});
 const ui=context.ui;
 ui.st.trades={trades:[{
@@ -37,7 +37,9 @@ ui.st.autonomous={counts:{direction:40,trade:8},
   hypotheses:[{hypothesis_id:'h1',kind:'ENTRY_BLOCKER_RELAXATION',scope:{asset:'BTC',horizon:'5m',regime:'TREND'},
     proposal:{blocker:'RISK_REWARD_GATE',action:'SHADOW_REEVALUATE_AFTER_BLOCK'},
     evidence:{n:9,mean_abs_move:0.006},mode:'SHADOW_ONLY'}],
-  assets:{BTC:{diagnostics:{
+  assets:{BTC:{
+    entry_false_block:{blockers:[{blocker:'IMPULSE_ALREADY_PASSED',n:4,observed_move_sum:.032,mean_abs_move:.008}]},
+    diagnostics:{
     outcome_evidence_trade_rows:20,path_evidence_trade_rows:8,stop_replay_ready_rows:10,exit_replay_ready_rows:7,
     outcome_profitable_trade_rows:12,outcome_losing_trade_rows:8,outcome_flat_trade_rows:0,
     outcome_win_rate:.60,outcome_net_pnl_rub:540,outcome_avg_net_pnl_rub:27,
@@ -64,6 +66,10 @@ assert.match(elements.reviewBody.innerHTML,/MFE \/ MAE/);
 assert.match(elements.reviewBody.innerHTML,/Вход → выход/);
 assert.match(elements.reviewBody.innerHTML,/контрфакт закрыт/);
 assert.match(elements.reviewBody.innerHTML,/Автообучение результата и размера/);
+assert.match(elements.reviewBody.innerHTML,/Приоритет обучения/);
+assert.match(elements.reviewBody.innerHTML,/P2 · повторяется/);
+assert.match(elements.reviewBody.innerHTML,/Пропущенный вход/);
+assert.match(elements.reviewBody.innerHTML,/3\.20%/);
 assert.match(elements.reviewBody.innerHTML,/Размер · без калибровки/);
 assert.match(elements.reviewBody.innerHTML,/Future N/);
 assert.match(elements.reviewBody.innerHTML,/DD база → кандидат/);
