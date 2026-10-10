@@ -145,10 +145,14 @@ def _trend_acceleration_state(row,direction,policy):
             fast=float(ecfg.get('fast_target_standard') or .50)
             mid_target=float((cfg.get('stage_targets_standard') or {}).get('MID_CONFIRMED') or .75)
             maximum=float(ecfg.get('confirmed_target_standard') or 1.00)
-        # A senior confirmation is sufficient for maximum scale. A mid
-        # confirmation plus a confirmed catalyst is also sufficient because
-        # the event has already been established causally by price/activity.
-        if senior or (mid and event_impulse.get('news_confirmed')):
+        # A GAME_CHANGER_EXTREME already combines a verified senior
+        # structural break with a forming move larger than completed 1m/5m/1h
+        # volatility. Owner P0 rule: request maximum permitted exposure now;
+        # news and later timeframes govern HOLD, not whether the first max-sized
+        # request exists. Ordinary impulses keep the staged ladder.
+        if event_impulse.get('immediate_max'):
+            stage='GAME_CHANGER_MAX_IMMEDIATE'; target=maximum
+        elif senior or (mid and event_impulse.get('news_confirmed')):
             stage='EVENT_MAX_CONFIRMED'; target=maximum
         elif mid:
             stage='EVENT_MID_CONFIRMED'; target=mid_target
