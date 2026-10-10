@@ -77,6 +77,68 @@ class PriorityLockTests(unittest.TestCase):
         self.assertTrue(lock.acquire(blocking=False))
         lock.release()
 
+    def test_protective_preclaim_blocks_new_ordinary_and_is_consumed_by_guard(self):
+        lock = PriorityRLock()
+        lock.reserve_protective_turn(.5)
+        result = []
+        def ordinary():
+            acquired = lock.acquire(blocking=False)
+            result.append(acquired)
+            if acquired:
+                lock.release()
+        thread = threading.Thread(target=ordinary)
+        thread.start(); thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result, [False])
+        self.assertEqual(lock.snapshot()['protective_reservations'], 1)
+
+        self.assertTrue(lock.acquire(priority=True))
+        self.assertEqual(lock.snapshot()['last_handoff_reason'], 'PROTECTIVE_PRECLAIM')
+        self.assertEqual(lock.snapshot()['protective_reservations'], 0)
+        lock.release()
+
+        result.clear()
+        thread = threading.Thread(target=ordinary)
+        thread.start(); thread.join(2)
+        self.assertEqual(result, [True])
+
+    def test_protective_preclaim_cancel_wakes_waiting_ordinary(self):
+        lock = PriorityRLock()
+        lock.reserve_protective_turn(.5)
+        entered = threading.Event()
+        def ordinary():
+            with lock:
+                entered.set()
+        thread = threading.Thread(target=ordinary)
+        thread.start()
+        self.wait_queued(lock, ordinary=1)
+        self.assertFalse(entered.is_set())
+        lock.cancel_protective_turn()
+        self.assertTrue(entered.wait(2))
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(lock.snapshot()['protective_reservations'], 0)
+
+    def test_protective_preclaim_never_interrupts_current_owner_reentry(self):
+        lock = PriorityRLock()
+        lock.acquire()
+        reserved = threading.Event()
+        release = threading.Event()
+        def guard_prepare():
+            lock.reserve_protective_turn(.5)
+            reserved.set()
+            release.wait(2)
+            lock.cancel_protective_turn()
+        thread = threading.Thread(target=guard_prepare)
+        thread.start()
+        self.assertTrue(reserved.wait(2))
+        self.assertTrue(lock.acquire(blocking=False))
+        self.assertEqual(lock.snapshot()['depth'], 2)
+        lock.release()
+        release.set(); thread.join(2)
+        lock.release()
+        self.assertFalse(thread.is_alive())
+
     def test_timeout_and_wrong_owner_leave_no_priority_reservation(self):
         lock = PriorityRLock()
         results = []
