@@ -38,6 +38,11 @@ class ExitAccountingDB:
             return Result()
         if query.startswith("SELECT * FROM paper_trades"):
             return Result(self.trade)
+        if query.startswith("SELECT COALESCE(SUM(notional_rub),0) AS exit_notional_rub"):
+            exits=[o for o in self.orders if o[1]==args[0] and o[4] in ('SELL','BUY_TO_COVER')]
+            notional=sum(float(o[6]) for o in exits)
+            units=sum(float(o[6])/float(o[5]) for o in exits if float(o[5])>0)
+            return Result({'exit_notional_rub':notional,'exit_units':units,'exit_fill_count':len(exits)})
         self.writes.append((query,args))
         if query.startswith("UPDATE paper_portfolios SET realized_pnl_rub="):
             pass
@@ -443,7 +448,7 @@ class ProtectiveLoopLifetimeTests(unittest.TestCase):
             return copy.deepcopy(selected) if position['asset']=='ETH' else {}
         book=object()
         changes=[{'portfolio':'Champion','asset':'ETH','reason':'existing-protective-result'}]
-        def protective(vp,pg_connect,quotes,*,timing=None):
+        def protective(vp,pg_connect,quotes,*,timing=None,eligible_trade_ids=None):
             self.assertIs(vp,book)
             self.assertIs(pg_connect,connect)
             passes.append(alive())
@@ -466,7 +471,11 @@ class ProtectiveLoopLifetimeTests(unittest.TestCase):
             '_v90r25_pf_cache':{'at':55.0,'value':{'preserve':'positions'},'revision':7},
             '_v90r23_trade_cache':{'at':44.0,'value':{'preserve':'trades'}},
             'last_cycle':{'portfolio_autopilot':{'preserve':'live'},'other':'keep'}}
+        protective_mutex=SimpleNamespace(
+            reserve_protective_turn=lambda seconds: None,
+            cancel_protective_turn=lambda: None)
         environment={'ns':ns,'_state':state,'snapshot':lambda:dict(state),
+            '_mutex':protective_mutex,'PROTECTIVE_PRECLAIM_SECONDS':G.PROTECTIVE_PRECLAIM_SECONDS,
             'time':SimpleNamespace(monotonic=lambda:100.0,sleep=sleep),
             'datetime':Clock,'timezone':timezone,'refresh_position_quotes':refresh,
             'QUOTE_POSITION_SQL':G.QUOTE_POSITION_SQL,
