@@ -287,6 +287,7 @@ def _project_episodes(account, fills, fees, funding):
                     "action": fill.get("action"),
                     "exit_reason": fill.get("exit_reason"),
                     "manual": fill.get("manual") is True,
+                    "currency_excursion_snapshot": fill.get("currency_excursion_snapshot") or {},
                 }
                 closed.append(active)
                 active = None
@@ -346,6 +347,38 @@ def _clean_episode(episode, multiplier, allocation, environment):
     reason = exit_meta.get("exit_reason")
     if not reason:
         reason = "MANUAL_CLOSE" if exit_meta.get("manual") else "LIVE_CLOSE"
+    excursion = exit_meta.get("currency_excursion_snapshot") or {}
+    mfe_pct = _decimal(excursion.get("mfe_pct"))
+    mae_pct = _decimal(excursion.get("mae_pct"))
+    direction_sign = Decimal("1") if episode["direction"] == "LONG" else Decimal("-1")
+    realized_move_pct = (
+        Decimal("100") * direction_sign * (exit_price / entry - Decimal("1"))
+        if entry is not None and exit_price is not None and entry > 0 else None
+    )
+    capture_ratio = None
+    giveback_pct = None
+    if mfe_pct is not None and mfe_pct > 0 and realized_move_pct is not None:
+        capture_ratio = max(Decimal("0"), min(Decimal("1"), realized_move_pct / mfe_pct))
+        giveback_pct = max(Decimal("0"), mfe_pct - max(Decimal("0"), realized_move_pct))
+    mfe_threshold = Decimal("0.15")
+    protection_candidate = bool(mfe_pct is not None and mfe_pct >= mfe_threshold)
+    shadow_dynamic_tp = {
+        "version": "CURRENCY_LIVE_MANAGEMENT_SHADOW_V1",
+        "mode": "SHADOW_ONLY_NO_EXECUTION_CHANGE",
+        "mfe_threshold_pct_points": float(mfe_threshold),
+        "mfe_threshold_reached": protection_candidate,
+        "observed_mfe_pct": float(mfe_pct) if mfe_pct is not None else None,
+        "observed_mae_pct": float(mae_pct) if mae_pct is not None else None,
+        "realized_move_pct": float(realized_move_pct) if realized_move_pct is not None else None,
+        "capture_ratio": float(capture_ratio) if capture_ratio is not None else None,
+        "giveback_pct": float(giveback_pct) if giveback_pct is not None else None,
+        "profit_protection_candidate": protection_candidate,
+        "dynamic_tp_candidate": bool(
+            protection_candidate and giveback_pct is not None and giveback_pct >= Decimal("0.10")
+        ),
+        "automatic_action": False,
+        "promotion_required": ["OOS", "COST_STRESS", "REGIME_STABILITY", "SUFFICIENT_SAMPLE"],
+    }
     trade_id = "currency-live-" + _stable_id(*(episode["ids"] or [opened, closed]))
     return {
         "trade_id": trade_id,
@@ -374,6 +407,13 @@ def _clean_episode(episode, multiplier, allocation, environment):
         "stop_price": meta.get("stop_price"),
         "take_price": meta.get("target_price"),
         "holding_duration_seconds": max(0.0, (closed-opened).total_seconds()) if opened and closed else None,
+        "mfe_pct": float(mfe_pct) if mfe_pct is not None else None,
+        "mae_pct": (-float(mae_pct)) if mae_pct is not None else None,
+        "capture_ratio": float(capture_ratio) if capture_ratio is not None else None,
+        "live_capture_ratio": float(capture_ratio) if capture_ratio is not None else None,
+        "giveback_pct": float(giveback_pct) if giveback_pct is not None else None,
+        "live_giveback_pct": float(giveback_pct) if giveback_pct is not None else None,
+        "path_evidence_source": "CURRENCY_LIVE_DURABLE_EXCURSION",
         "opening_fraction_pct": (
             float(Decimal("100") * basis / allocation) if basis is not None and allocation > 0 else None
         ),
@@ -388,6 +428,12 @@ def _clean_episode(episode, multiplier, allocation, environment):
             "stop_price": meta.get("stop_price"),
             "target_price": meta.get("target_price"),
             "exit_reason": reason,
+            "currency_excursion_snapshot": excursion,
+            "currency_live_management_shadow": shadow_dynamic_tp,
+            "management_evidence_status": (
+                "DURABLE_LIVE_PATH" if mfe_pct is not None and mae_pct is not None
+                else "INCOMPLETE_LIVE_PATH"
+            ),
         },
     }
 
@@ -643,7 +689,8 @@ def read_live_currency_on(connection, *, environment=None, checked_at=None, max_
                        metadata->>'target_price' AS target_price,
                        metadata->>'exit_reason' AS exit_reason,
                        (metadata ? 'manual_request' OR metadata ? 'manual_owner_user_id') AS manual,
-                       COALESCE(metadata->>'entry_signal_tier',metadata->>'signal_tier') AS signal_tier
+                       COALESCE(metadata->>'entry_signal_tier',metadata->>'signal_tier') AS signal_tier,
+                       metadata->'currency_excursion_snapshot' AS currency_excursion_snapshot
                 FROM {schema}.{FILLS}
                 WHERE account_id=%s AND instrument_uid=%s
                 ORDER BY executed_at,trade_id""",
