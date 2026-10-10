@@ -12,9 +12,9 @@ from veritas_protection_read_model import position_sql
 
 
 MARK_FIELDS = (
-    'price_source_lock', 'contract_identity', 'entry_primary_source',
-    'entry_contract_secid', 'source_locked_mark', 'entry_execution_observed_at',
-    'entry_market_observed_at', 'entry_execution_model',
+    'price_source_lock', 'price_source_status', 'contract_identity', 'entry_primary_source',
+    'entry_contract_secid', 'source_locked_mark', 'last_mark_price',
+    'entry_execution_observed_at', 'entry_market_observed_at', 'entry_execution_model',
 )
 MARK_SQL = position_sql(MARK_FIELDS)
 
