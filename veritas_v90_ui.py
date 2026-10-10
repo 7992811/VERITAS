@@ -1581,6 +1581,56 @@ function hypothesisEffectHtml(h,r){
   }
   return '';
 }
+function learningPriorityQueue(learning2,a){
+  const rows=[],assets=learning2&&learning2.assets&&typeof learning2.assets==='object'?learning2.assets:{};
+  Object.entries(assets).forEach(([asset,data])=>{
+    const ef=(data&&data.entry_false_block)||{};
+    (ef.blockers||[]).forEach(b=>{
+      const blocker=String(b.blocker||''),nObs=Number(b.n||0),sum=knownNumber(b.observed_move_sum),mean=knownNumber(b.mean_abs_move);
+      if(!blocker||nObs<=0)return;
+      const learnable=!['EXECUTION_QUOTE_STALE','PRIMARY_SOURCE_GATE_FAILED','MARKET_TIME_GATE_FAILED','STOP_RISK_CAP_EXCEEDED'].includes(blocker);
+      const grade=learnable&&nObs>=3?2:1;
+      rows.push({grade,kind:'ENTRY',asset,title:'Пропущенный вход · '+reasonRu(blocker),
+        metric:sum==null?'—':reviewMove(sum),sub:'наблюдаемое суммарное движение',
+        detail:nObs+' эп. · среднее '+(mean==null?'—':reviewMove(mean)),magnitude:Math.abs(sum||0),learnable});
+    });
+  });
+  const registry=learning2&&learning2.registry||{},cands=Array.isArray(registry.candidates)?registry.candidates:[];
+  const hById=new Map((learning2&&learning2.hypotheses||[]).map(h=>[h.hypothesis_id,h]));
+  cands.forEach(r=>{
+    const h=hById.get(r.candidate_id); if(!h)return;
+    const p=r.prospective||{},q=p.replay||{},status=String(r.status||'');
+    if(h.kind==='STOP_GEOMETRY'||h.kind==='EXIT_CAPTURE'){
+      const delta=knownNumber(q.mean_delta_net_return),ci=knownNumber(q.delta_ci95_low),nObs=Number(q.n||0);
+      const supported=status==='SHADOW_ELIGIBLE'||status==='REPLAY_SUPPORTED'||(ci!=null&&ci>0&&delta!=null&&delta>0);
+      const grade=supported?3:nObs>0?2:1;
+      rows.push({grade,kind:h.kind,asset:(h.scope||{}).asset||'',title:reviewKindLabel(h.kind),
+        metric:delta==null?'—':reviewMove(delta),sub:'средняя replay-дельта',
+        detail:'N '+nObs+' · 95% low '+(ci==null?'—':reviewMove(ci)),magnitude:Math.abs(delta||0)*Math.max(1,nObs),learnable:true});
+    }else if(h.kind==='ENTRY_BLOCKER_RELAXATION'){
+      const rate=knownNumber(p.favourable_rate),mean=knownNumber(p.mean_candidate_signed_return),nObs=Number(p.n||0);
+      const grade=status==='SHADOW_ELIGIBLE'?3:nObs>0?2:1;
+      rows.push({grade,kind:h.kind,asset:(h.scope||{}).asset||'',title:'Проверка блокировки · '+reasonRu((h.proposal||{}).blocker),
+        metric:mean==null?'—':reviewMove(mean),sub:'среднее последующее движение',
+        detail:'N '+nObs+' · благоприятно '+(rate==null?'—':n(100*rate,1)+'%'),magnitude:Math.abs(mean||0)*Math.max(1,nObs),learnable:true});
+    }
+  });
+  (Array.isArray(a&&a.candidates)?a.candidates:[]).forEach(x=>{
+    if(!['CALIBRATION','SIZE_DOWN_WEAK_SIGNAL','SIZE_DOWN_UNCALIBRATED'].includes(String(x&&x.kind||'')))return;
+    const m=x.monitor_evidence||x.evidence||{},delta=knownNumber(m.mean_delta),nObs=Number(m.n||0);
+    const proven=x.profitability_proven===true&&x.evidence_valid===true&&String(x.state||'').toLowerCase()==='promoted';
+    rows.push({grade:proven?3:nObs>0?2:1,kind:x.kind,asset:(x.scope||{}).asset||'',title:autoCandidateLabel(x.kind),
+      metric:delta==null?'—':n(delta,3)+' R',sub:'дельта результата',
+      detail:'N '+nObs+' · '+autoStateLabel(x.state),magnitude:Math.abs(delta||0)*Math.max(1,nObs),learnable:true});
+  });
+  return rows.sort((x,y)=>y.grade-x.grade||y.magnitude-x.magnitude||String(x.asset).localeCompare(String(y.asset))).slice(0,10);
+}
+function renderLearningPriorityQueue(learning2,a){
+  const rows=learningPriorityQueue(learning2,a),label=g=>g===3?'P1 · подтверждено':g===2?'P2 · повторяется':'P3 · наблюдение';
+  return '<section class="review-section"><h3>Приоритет обучения</h3><div class="review-section-note">Сначала доказательность, затем величина эффекта внутри сопоставимого типа. Проценты движения, R и рубли не смешиваются в один искусственный балл.</div>'+
+    (rows.length?'<div class="review-list">'+rows.map(r=>'<div class="review-item"><div class="review-item-head"><div><div class="review-item-title">'+esc(lab(r.asset)||'SYSTEM')+' · '+esc(r.title)+'</div><div class="review-item-sub">'+esc(r.detail)+'</div></div><span class="review-status '+(r.grade===3?'ok':r.grade===2?'warn':'')+'">'+label(r.grade)+'</span></div><div class="review-metrics"><div class="review-metric"><span>'+esc(r.sub)+'</span><b>'+esc(r.metric)+'</b></div><div class="review-metric"><span>Контур</span><b>'+esc(r.kind)+'</b></div><div class="review-metric"><span>Обучаемо</span><b>'+esc(r.learnable?'да':'нет')+'</b></div></div></div>').join('')+'</div>':'<div class="msg">Приоритетных доказанных ошибок пока нет.</div>')+
+    '</section>';
+}
 function renderHypothesesSection(learning2){
   const hs=Array.isArray(learning2&&learning2.hypotheses)?learning2.hypotheses:[];
   const registry=learning2&&learning2.registry||{},cands=Array.isArray(registry.candidates)?registry.candidates:[];
@@ -1619,7 +1669,7 @@ function renderReview(){
     :'Evidence-tier по закрытым сделкам обновляется.';
   const trades='<section class="review-section"><h3>Закрытые сделки · плотный разбор</h3><div class="review-section-note">'+esc(authority)+' · MFE/MAE не восстанавливаются из неполного пути.</div>'+(reviews.length?'<div class="review-list">'+reviews.slice(0,24).map(renderTradeReviewItem).join('')+'</div>':'<div class="msg">Закрытых сделок для разбора пока нет.</div>')+'</section>';
   const loop='<section class="review-section"><h3>Контур самообучения</h3><div class="review-flow"><span class="review-chip">Фиксация</span><i>→</i><span class="review-chip">Диагностика</span><i>→</i><span class="review-chip">Future validation</span><i>→</i><span class="review-chip">Replay / Shadow</span><i>→</i><span class="review-chip">Production candidate</span></div><div class="review-foot">Одно наблюдение правило не меняет. Outcome-only может обучать денежный результат/размер и запускать bounded replay; прямые MFE/MAE требуют path evidence. '+esc(learningWaitText(a))+'</div></section>';
-  $('reviewBody').innerHTML='<div class="review-grid"><div>'+trades+renderMissedSection(l2,missed)+'</div><div>'+renderAutonomousTradeLearning(a)+renderHypothesesSection(l2)+loop+'</div></div>';
+  $('reviewBody').innerHTML='<div class="review-grid"><div>'+trades+renderMissedSection(l2,missed)+'</div><div>'+renderLearningPriorityQueue(l2,a)+renderAutonomousTradeLearning(a)+renderHypothesesSection(l2)+loop+'</div></div>';
 }
 
 function learningWaitText(a){
