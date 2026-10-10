@@ -721,29 +721,30 @@ def build_order_intent(portfolio: str, asset: str, direction: str, target_fracti
 
 def production_current_account_risk_blockers(*, stop_risk_nav, single_asset_fraction, gross_after,
                                             total_open_stop_risk_nav_after, correlated_stop_risk_nav_after,
-                                            instrument_spec_validated):
+                                            instrument_spec_validated, risk_profile=None):
     """Exposure and stop-risk controls derivable from current broker facts."""
+    profile = dict(LIVE_RISK_PROFILE if risk_profile is None else risk_profile)
     blockers = []
     sr = _num(stop_risk_nav)
-    if sr is None or sr > LIVE_RISK_PROFILE["max_stop_risk_nav"]:
+    if sr is None or sr > float(profile["max_stop_risk_nav"]):
         blockers.append("STOP_RISK_LIMIT")
     total_sr = _num(total_open_stop_risk_nav_after)
     if total_sr is None:
         blockers.append("TOTAL_OPEN_STOP_RISK_REQUIRED")
-    elif total_sr > LIVE_RISK_PROFILE["max_total_open_stop_risk_nav"]:
+    elif total_sr > float(profile["max_total_open_stop_risk_nav"]):
         blockers.append("TOTAL_OPEN_STOP_RISK_LIMIT")
     corr_sr = _num(correlated_stop_risk_nav_after)
     if corr_sr is None:
         blockers.append("CORRELATED_STOP_RISK_REQUIRED")
-    elif corr_sr > LIVE_RISK_PROFILE["max_correlated_stop_risk_nav"]:
+    elif corr_sr > float(profile["max_correlated_stop_risk_nav"]):
         blockers.append("CORRELATED_STOP_RISK_LIMIT")
     sf = _num(single_asset_fraction)
-    if sf is None or sf > LIVE_RISK_PROFILE["max_single_asset_fraction"]:
+    if sf is None or sf > float(profile["max_single_asset_fraction"]):
         blockers.append("SINGLE_ASSET_LIMIT")
     if not instrument_spec_validated:
         blockers.append("INSTRUMENT_SPEC_REQUIRED")
     ga = _num(gross_after)
-    if ga is None or ga > LIVE_RISK_PROFILE["max_gross"]:
+    if ga is None or ga > float(profile["max_gross"]):
         blockers.append("GROSS_LIMIT")
     return blockers
 
@@ -751,21 +752,24 @@ def production_current_account_risk_blockers(*, stop_risk_nav, single_asset_frac
 def production_account_risk_blockers(*, stop_risk_nav, single_asset_fraction, gross_after, drawdown,
                                     total_open_stop_risk_nav_after, correlated_stop_risk_nav_after,
                                     instrument_spec_validated, daily_pnl_pct, weekly_pnl_pct,
-                                    broker_reconciled, kill_switch):
+                                    broker_reconciled, kill_switch, risk_profile=None):
     """Model admission retains both current and historical account controls."""
+    profile = dict(LIVE_RISK_PROFILE if risk_profile is None else risk_profile)
     blockers = production_current_account_risk_blockers(stop_risk_nav=stop_risk_nav,
         single_asset_fraction=single_asset_fraction, gross_after=gross_after,
         total_open_stop_risk_nav_after=total_open_stop_risk_nav_after,
         correlated_stop_risk_nav_after=correlated_stop_risk_nav_after,
-        instrument_spec_validated=instrument_spec_validated)
+        instrument_spec_validated=instrument_spec_validated, risk_profile=profile)
     dd = _num(drawdown)
-    if dd is None or dd >= LIVE_RISK_PROFILE["hard_drawdown_stop"]:
+    if dd is None or dd >= float(profile["hard_drawdown_stop"]):
         blockers.append("DRAWDOWN_LIMIT")
+    daily_limit = profile.get("daily_loss_stop")
+    weekly_limit = profile.get("weekly_loss_stop")
     dp = _num(daily_pnl_pct, 0.0)
-    if dp is not None and dp <= -LIVE_RISK_PROFILE["daily_loss_stop"]:
+    if daily_limit is not None and dp is not None and dp <= -float(daily_limit):
         blockers.append("DAILY_LOSS_STOP")
     wp = _num(weekly_pnl_pct, 0.0)
-    if wp is not None and wp <= -LIVE_RISK_PROFILE["weekly_loss_stop"]:
+    if weekly_limit is not None and wp is not None and wp <= -float(weekly_limit):
         blockers.append("WEEKLY_LOSS_STOP")
     if not broker_reconciled:
         blockers.append("BROKER_RECONCILIATION_REQUIRED")
@@ -784,7 +788,9 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
                           model_promoted: bool = False,
                           model_version: Optional[str] = None,
                           daily_pnl_pct: Optional[float] = None, weekly_pnl_pct: Optional[float] = None,
-                          broker_reconciled: bool = False, kill_switch: bool = False) -> Dict[str, Any]:
+                          broker_reconciled: bool = False, kill_switch: bool = False,
+                          risk_profile: Optional[Dict[str, Any]] = None,
+                          probability_policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     blockers = []
     # This explicit mode cannot inherit the PAPER structural RR diagnostic rule.
     econ = economics_gate(asset, plan, execution_mode='LIVE')
@@ -795,28 +801,39 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
     if not durable_storage:
         blockers.append("DURABLE_STORAGE_REQUIRED")
     p = _num(calibrated_probability)
-    min_p = float(os.getenv("VERITAS_LIVE_MIN_CALIBRATED_PROBABILITY", "0.60"))
-    if p is None:
-        blockers.append("CALIBRATED_PROBABILITY_REQUIRED")
-    elif p < min_p:
-        blockers.append("CALIBRATED_PROBABILITY_TOO_LOW")
+    probability_cfg = dict(probability_policy or {})
+    probability_required = probability_cfg.get("required", True) is not False
+    expectancy_required = probability_cfg.get("expectancy_required", True) is not False
+    min_p = float(probability_cfg.get(
+        "minimum_probability",
+        os.getenv("VERITAS_LIVE_MIN_CALIBRATED_PROBABILITY", "0.60")))
+    if probability_required:
+        if p is None:
+            blockers.append("CALIBRATED_PROBABILITY_REQUIRED")
+        elif p < min_p:
+            blockers.append("CALIBRATED_PROBABILITY_TOO_LOW")
 
     rr = _num(econ.get("expected_to_stop_ratio"))
     stop_distance = _num(econ.get("stop_distance_pct"))
     cost_r = (float(econ.get("modeled_round_trip_cost_pct") or round_trip_cost_pct()) / stop_distance) if stop_distance and stop_distance > 0 else None
     expectancy_r = (p * rr - (1.0 - p)) if (p is not None and rr is not None and cost_r is not None) else None
-    min_expectancy_r = float(os.getenv("VERITAS_LIVE_MIN_EXPECTANCY_R", "0.05"))
-    if expectancy_r is None:
-        blockers.append("POST_COST_EXPECTANCY_UNAVAILABLE")
-    elif expectancy_r <= min_expectancy_r:
-        blockers.append("POST_COST_EXPECTANCY_TOO_LOW")
+    min_expectancy_r = float(probability_cfg.get(
+        "minimum_expectancy_r",
+        os.getenv("VERITAS_LIVE_MIN_EXPECTANCY_R", "0.05")))
+    if expectancy_required:
+        if expectancy_r is None:
+            blockers.append("POST_COST_EXPECTANCY_UNAVAILABLE")
+        elif expectancy_r <= min_expectancy_r:
+            blockers.append("POST_COST_EXPECTANCY_TOO_LOW")
 
+    profile = dict(LIVE_RISK_PROFILE if risk_profile is None else risk_profile)
     blockers.extend(production_account_risk_blockers(stop_risk_nav=stop_risk_nav,
         single_asset_fraction=single_asset_fraction, gross_after=gross_after, drawdown=drawdown,
         total_open_stop_risk_nav_after=total_open_stop_risk_nav_after,
         correlated_stop_risk_nav_after=correlated_stop_risk_nav_after,
         instrument_spec_validated=instrument_spec_validated, daily_pnl_pct=daily_pnl_pct,
-        weekly_pnl_pct=weekly_pnl_pct, broker_reconciled=broker_reconciled, kill_switch=kill_switch))
+        weekly_pnl_pct=weekly_pnl_pct, broker_reconciled=broker_reconciled, kill_switch=kill_switch,
+        risk_profile=profile))
     if not model_promoted:
         blockers.append("MODEL_PROMOTION_REQUIRED")
     ok = len(blockers) == 0
@@ -833,7 +850,10 @@ def production_order_gate(asset: str, plan: Optional[Dict[str, Any]], source_gat
         "minimum_calibrated_probability": min_p,
         "post_cost_expectancy_r": expectancy_r,
         "minimum_post_cost_expectancy_r": min_expectancy_r,
+        "probability_required": probability_required,
+        "expectancy_required": expectancy_required,
+        "probability_policy": probability_cfg,
         "modeled_cost_r": cost_r,
-        "live_risk_profile": dict(LIVE_RISK_PROFILE),
+        "live_risk_profile": profile,
         "principle": "Real-money orders require data, edge, calibration, durable state, broker reconciliation and risk limits simultaneously.",
     }
