@@ -5,6 +5,7 @@ row decoding. These counters do not represent PostgreSQL execution time.
 Transactions remain the original connection's bound methods. Their internal
 commands are not counted as explicit execute calls.
 """
+from copy import deepcopy
 import math
 import re
 import time
@@ -160,13 +161,14 @@ class _AccountingCursor:
 
 
 class AccountingConnection:
-    """A scoped view; its measurements never own cursors, parameters or rows."""
-    __slots__ = ('_connection', '_measurements', '__weakref__')
+    """A scoped view with transaction-local read reuse for one portfolio book."""
+    __slots__ = ('_connection', '_measurements', '_portfolio_cache', '__weakref__')
 
     def __init__(self, connection, *, clock=None, cpu_clock=None):
         self._connection = connection
         self._measurements = _Measurements(clock if clock is not None else time.monotonic,
                                            cpu_clock if cpu_clock is not None else time.thread_time)
+        self._portfolio_cache = {}
 
     def __getattr__(self, name):
         # In particular, transaction is the original bound method. No extra
@@ -179,8 +181,42 @@ class AccountingConnection:
         else:
             setattr(self._connection, name, value)
 
+    def _invalidate_portfolio_cache_for_query(self, query):
+        if not isinstance(query, str) or not self._portfolio_cache:
+            return
+        bucket = _bucket(query)
+        if bucket in ('write_positions', 'write_portfolios'):
+            self._portfolio_cache.clear()
+            return
+        # Data-modifying CTEs are intentionally outside the lightweight bucket
+        # parser. Fail closed whenever a SQL string can mutate live book rows.
+        if re.search(r'\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(?:[A-Za-z_][A-Za-z_0-9$]*\.)?(?:paper_positions|paper_portfolios)\b',
+                     query, re.IGNORECASE):
+            self._portfolio_cache.clear()
+
+    def portfolio_rows(self, name, *, mark_only=False, mark_sql=None):
+        """Reuse an unchanged portfolio snapshot inside this accounting call.
+
+        Every live-book mutation invalidates the cache before reaching the
+        driver. Returned rows are deep copies so historical wrappers cannot
+        mutate the retained snapshot used by a later compatibility layer.
+        """
+        key = (str(name), bool(mark_only))
+        cached = self._portfolio_cache.get(key)
+        if cached is not None:
+            return deepcopy(cached[0]), deepcopy(cached[1])
+        portfolio = self.execute(
+            'SELECT * FROM paper_portfolios WHERE name=%s', (name,)).fetchone()
+        position_sql = (mark_sql if mark_only and mark_sql else 'SELECT * FROM paper_positions')
+        positions = self.execute(position_sql+' WHERE portfolio_name=%s', (name,)).fetchall()
+        stored = (deepcopy(portfolio), deepcopy(list(positions or [])))
+        self._portfolio_cache[key] = stored
+        return deepcopy(stored[0]), deepcopy(stored[1])
+
     def execute(self, *args, **kwargs):
-        bucket = _bucket(args[0] if args else kwargs.get('query'))
+        query = args[0] if args else kwargs.get('query')
+        self._invalidate_portfolio_cache_for_query(query)
+        bucket = _bucket(query)
         cursor = self._measurements.call('execute', bucket, self._connection.execute,
                                          args, kwargs)
         return _AccountingCursor(cursor, self._measurements, bucket)
