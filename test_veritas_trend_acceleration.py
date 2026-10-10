@@ -118,7 +118,7 @@ class AccelerationGrossHeadroomTests(unittest.TestCase):
         adjusted, acceleration, governor = VPE._policy_with_acceleration_caps(policy, row)
         self.assertTrue(acceleration["active"])
         self.assertEqual(governor["state"], "NORMAL")
-        self.assertAlmostEqual(adjusted["max_fraction"], 0.75)
+        self.assertAlmostEqual(adjusted["max_fraction"], 1.00)
         self.assertAlmostEqual(adjusted["max_gross"], 1.00)
 
     def test_extreme_impulse_can_earn_full_nav_in_normal_state(self):
@@ -145,7 +145,7 @@ class AccelerationGrossHeadroomTests(unittest.TestCase):
             }},
         }
         adjusted, _, _ = VPE._policy_with_acceleration_caps(policy, row)
-        self.assertAlmostEqual(adjusted["max_fraction"], 0.75)
+        self.assertAlmostEqual(adjusted["max_fraction"], 1.00)
         self.assertAlmostEqual(adjusted["max_gross"], 0.45)
 
     def test_currency_never_receives_acceleration_caps(self):
@@ -295,6 +295,105 @@ class TrendDayRunnerTests(unittest.TestCase):
             {"r_accel_mfe_profit_lock_active":True,"last_trend_day_efficiency":td}),0.50)
 
 
+def moex_event_impulse_row(*, mid=False, supporting=None, news=False):
+    row=trend_row(state="BUILDING_TREND",horizon="5m",tier="SUPER_LONG",
+                  evidence=5,expected=0.00189,supporting=supporting,mid=mid)
+    row.update({
+        "asset":"MOEX","price":2341.20,"regime":"UPTREND_HIGH_VOL",
+        "horizon_structure":{
+            "direction":"LONG","score":0.955085,"state":"BUILDING_TREND",
+        },
+        "intraday_structure":{
+            "direction":"LONG","score":0.955085,
+            "volume_confirmed":True,"activity_confirmed":True,
+            "relative_volume":1.80,"volatility_expansion":True,
+        },
+        "event_shadow_score":0.80 if news else 0.0,
+    })
+    event={
+        "event_id":"STF_8aefee60345acc7c0ea3d4a3",
+        "event_type":"SAME_TIMEFRAME_STRUCTURAL_BREAKOUT",
+        "direction":"LONG","timeframe":"5m","trigger_timeframe":"5m",
+        "structural_timeframe":"5m","stop_timeframe":"5m","atr_timeframe":"5m",
+        "trigger_level":2323.95,"signal_price":2330.12,
+        "stop_anchor":2322.58,"stop_price":2322.48295,
+        # Deliberately stale/spent target from the actual 2026-10-09 incident.
+        "target_price":2326.8841,"spent":True,
+        "spent_reason":"SAME_TF_TARGET_ALREADY_REACHED",
+        "target_progress":1.0,
+    }
+    row["timeframe_entry_context"]={"status":"OK","event":event}
+    row["trade_plan"]["timeframe_entry_context"]=row["timeframe_entry_context"]
+    row["trade_plan"]["trade_integrity"]={}
+    return row
+
+
+class EventImpulseP0Tests(unittest.TestCase):
+    def test_actual_moex_shape_is_event_impulse_even_with_spent_old_target(self):
+        row=moex_event_impulse_row()
+        impulse=VTDE.event_impulse_assess(row,"LONG")
+        self.assertTrue(impulse["eligible"],impulse)
+        self.assertEqual(impulse["owner_priority"],"P0_HIGHEST")
+        self.assertTrue(impulse["activity_confirmed"])
+        self.assertTrue(impulse["volatility_expansion"])
+        self.assertFalse(impulse["entry_requires_news"])
+        result=VSL._trend_acceleration_state(row,"LONG",{"mode":"CORE"})
+        self.assertTrue(result["active"],result)
+        self.assertEqual(result["stage"],"EVENT_FAST_CONFIRMED")
+        self.assertAlmostEqual(result["target_fraction"],0.50)
+        self.assertEqual(result["reason"],"OWNER_P0_EVENT_IMPULSE_ACCELERATION")
+
+    def test_event_impulse_scales_to_max_on_senior_confirmation(self):
+        row=moex_event_impulse_row(supporting=["1h","4h"])
+        core=VSL._trend_acceleration_state(row,"LONG",{"mode":"CORE"})
+        aggressive=VSL._trend_acceleration_state(row,"LONG",{"mode":"AGGRESSIVE"})
+        self.assertEqual(core["stage"],"EVENT_MAX_CONFIRMED")
+        self.assertAlmostEqual(core["target_fraction"],1.00)
+        self.assertAlmostEqual(aggressive["target_fraction"],5.00)
+        self.assertAlmostEqual(aggressive["temporary_max_gross"],5.00)
+
+    def test_news_confirms_hold_and_can_complete_scale_but_is_not_entry_gate(self):
+        first=VTDE.event_impulse_assess(moex_event_impulse_row(news=False),"LONG")
+        self.assertTrue(first["eligible"])
+        self.assertFalse(first["news_confirmed"])
+        row=moex_event_impulse_row(mid=True,news=True)
+        scaled=VSL._trend_acceleration_state(row,"LONG",{"mode":"CORE"})
+        self.assertEqual(scaled["stage"],"EVENT_MAX_CONFIRMED")
+        self.assertAlmostEqual(scaled["target_fraction"],1.00)
+        self.assertTrue(scaled["event_impulse"]["news_confirmed"])
+
+    def test_fixed_tp_is_deferred_until_impulse_exhaustion(self):
+        impulse=VTDE.event_impulse_assess(moex_event_impulse_row(),"LONG")
+        position={
+            "portfolio_name":"Champion","direction":"LONG","units":1.0,
+            "payload":{
+                "entry_event_impulse":impulse,
+                "active_target_stage":0,
+            },
+        }
+        blocked=VSL.target_reduction(position,2400.0,2400.0,"2026-10-09T20:36:00Z")
+        self.assertFalse(blocked["eligible"],blocked)
+        self.assertTrue(blocked["deferred"])
+        self.assertEqual(blocked["reason"],"OWNER_P0_EVENT_IMPULSE_FIXED_TP_DEFERRED")
+        self.assertEqual(blocked["target_reference_mode"],"HIGHER_TIMEFRAME_HIGHS_AND_ZONES")
+        position["payload"]["r46_trend_hold_active"]=False
+        ladder=[
+            {"price":2395.0,"fraction":0.5,"kind":"TP1"},
+            {"price":2400.0,"fraction":0.5,"kind":"TP2"},
+        ]
+        with patch.object(VSL,"active_ladder",return_value=ladder):
+            released=VSL.target_reduction(position,2400.0,2400.0,"2026-10-09T20:47:00Z")
+        self.assertTrue(released["eligible"],released)
+
+    def test_owner_p0_teaching_requires_no_additional_proof(self):
+        snap=VUT.event_impulse_policy_snapshot()
+        self.assertEqual(snap["priority"],"P0_HIGHEST")
+        self.assertEqual(snap["status"],"ACTIVE_OWNER_P0_CANONICAL")
+        self.assertFalse(snap["parameter_validation"]["additional_proof_required"])
+        self.assertEqual(snap["case_anchor"]["asset"],"MOEX")
+        self.assertEqual(snap["case_anchor"]["owner_expected_entry_time"],"21:46")
+
+
 class TrendAccelerationTests(unittest.TestCase):
     def test_fast_confirmation_earns_first_standard_scale(self):
         result = VSL._trend_acceleration_state(
@@ -302,7 +401,7 @@ class TrendAccelerationTests(unittest.TestCase):
         )
         self.assertTrue(result["active"])
         self.assertEqual(result["stage"], "FAST_CONFIRMED")
-        self.assertAlmostEqual(result["target_fraction"], 0.25)
+        self.assertAlmostEqual(result["target_fraction"], 1.00)
 
     def test_mid_confirmation_earns_half_nav_standard_target(self):
         row = trend_row(state="BUILDING_TREND", tier="LONG", mid=True)
@@ -323,7 +422,7 @@ class TrendAccelerationTests(unittest.TestCase):
             row, "LONG", {"mode": "AGGRESSIVE"}
         )
         self.assertEqual(result["stage"], "SENIOR_CONFIRMED")
-        self.assertAlmostEqual(result["target_fraction"], 2.50)
+        self.assertAlmostEqual(result["target_fraction"], 5.00)
 
     def test_extreme_trend_day_earns_full_standard_allocation(self):
         row=extreme_trend_row()
@@ -337,7 +436,7 @@ class TrendAccelerationTests(unittest.TestCase):
         row=extreme_trend_row()
         result=VSL._trend_acceleration_state(row,"LONG",{"mode":"AGGRESSIVE"})
         self.assertEqual(result["stage"],"EXTREME_CONFIRMED")
-        self.assertAlmostEqual(result["target_fraction"],3.50)
+        self.assertAlmostEqual(result["target_fraction"],5.00)
         self.assertAlmostEqual(result["temporary_max_gross"],5.00)
 
     def test_cross_asset_context_is_telemetry_only(self):
