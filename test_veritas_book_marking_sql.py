@@ -146,10 +146,14 @@ class BookMarkingSQLTests(unittest.TestCase):
                     if key not in changed_payload_keys:
                         self.assertEqual(saved['payload'][key], value, key)
                 self.assertEqual(saved['last_price'], G._quotes[saved['asset']]['price'])
-            updates = [(sql,args) for sql,args in trace.statements if sql.startswith('UPDATE')]
-            self.assertEqual(len(updates), 2)
-            self.assertTrue(all('payload || %s::jsonb' in sql for sql,args in updates))
-            self.assertTrue(all(len(args[2].encode('utf-8')) < 1000 for sql,args in updates))
+            updates = [(sql,args) for sql,args in trace.statements
+                       if sql.startswith('WITH delta AS')]
+            self.assertEqual(len(updates), 1)
+            batch=json.loads(updates[0][1][0])
+            self.assertEqual(len(batch),2)
+            self.assertTrue(all(not row['replace_payload'] for row in batch))
+            self.assertTrue(all(len(json.dumps(row['patch']).encode('utf-8')) < 1000
+                                for row in batch))
 
     def test_native_scalar_json_string_and_null_mark_semantics_match_frozen_baseline(self):
         self.seed([position()])
@@ -220,7 +224,8 @@ class BookMarkingSQLTests(unittest.TestCase):
                     trace = TracedConnection(c)
                     with G.book_transaction(trace):
                         self.assertEqual(H._v90j_mark_open_positions(trace, PORTFOLIO, {'BTC':9999.}, NOW), 0)
-                    self.assertFalse(any(sql.startswith('UPDATE') for sql,args in trace.statements))
+                    self.assertFalse(any(sql.startswith('UPDATE') or sql.startswith('WITH delta AS')
+                                         for sql,args in trace.statements))
                     self.assertEqual(self.contents(c), before)
 
 

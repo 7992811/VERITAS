@@ -19,16 +19,38 @@ MARK_FIELDS = (
 MARK_SQL = position_sql(MARK_FIELDS)
 
 
-def mark_open_positions(c, name, prices, ts, *, positions=None, quote_for_position, decode_payload, iso):
-    """Apply the existing source-locked mark without round-tripping its history.
+def _write_mark_batch(c, rows, ts):
+    if not rows:
+        return
+    encoded=json.dumps(rows,ensure_ascii=False,default=str)
+    c.execute(
+        """WITH delta AS (
+             SELECT * FROM jsonb_to_recordset(%s::jsonb)
+             AS d(portfolio_name text,asset text,last_price double precision,
+                  patch jsonb,replace_payload boolean)
+           )
+           UPDATE paper_positions AS target
+              SET last_price=delta.last_price,
+                  updated_at=%s,
+                  payload=CASE WHEN delta.replace_payload
+                               THEN delta.patch
+                               ELSE target.payload || delta.patch END
+             FROM delta
+            WHERE target.portfolio_name=delta.portfolio_name
+              AND target.asset=delta.asset""",
+        (encoded,ts)
+    )
 
-    The caller still owns the book transaction. Only ordinary JSON objects use
-    a delta; legacy scalar/array/null values retain their decode-and-replace
-    behavior. Mark fields are not accounting or permission to execute a trade.
+
+def mark_open_positions(c, name, prices, ts, *, positions=None, quote_for_position, decode_payload, iso):
+    """Apply source-locked marks with one bounded write per portfolio.
+
+    Ordinary JSON payloads keep delta semantics, so retained evidence is not
+    re-encoded. Legacy scalar/array/null payloads still use decode-and-replace.
     """
     rows = positions if positions is not None else c.execute(
         MARK_SQL+' WHERE portfolio_name=%s', (name,)).fetchall()
-    marked = 0
+    pending=[]
     for original in rows:
         row = dict(original)
         asset = str(row.get('asset') or '')
@@ -66,14 +88,16 @@ def mark_open_positions(c, name, prices, ts, *, positions=None, quote_for_positi
             )
             if repeated:
                 continue
-        if isinstance(payload, dict):
-            value, assignment = patch, 'payload || %s::jsonb'
+            value=patch
+            replace=False
         else:
-            value = decode_payload(row.get('payload'))
+            value=decode_payload(payload)
             value.update(patch)
-            assignment = '%s::jsonb'
-        c.execute('UPDATE paper_positions SET last_price=%s,updated_at=%s,payload='+assignment+
-                  ' WHERE portfolio_name=%s AND asset=%s',
-                  (price, ts, json.dumps(value, ensure_ascii=False, default=str), name, asset))
-        marked += 1
-    return marked
+            replace=True
+        pending.append({
+            'portfolio_name':name,'asset':asset,'last_price':price,
+            'patch':value,'replace_payload':replace,
+        })
+    _write_mark_batch(c,pending,ts)
+    return len(pending)
+
