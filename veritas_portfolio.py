@@ -23,6 +23,7 @@ import veritas_strategy_quality as VSQ
 import veritas_learning_exports as VLE
 import veritas_learning_integrity as VLI
 import veritas_trade_diagnostics as VTD
+import veritas_trade_postmortem as VPOST
 import veritas_trade_review as VTR
 import veritas_timeframe_management as VTM
 import veritas_portfolio_reporting as VPRPT
@@ -3212,6 +3213,9 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z['trade_diagnostics']=diagnosis
         z['learning_eligible']=bool(diagnosis.get('learning_eligible'))
         z['episode_key']=_v90j_episode_key(z,payload)
+        entry_snapshot=VPOST.entry_snapshot(z,dp,sp,diagnosis,raw_payload=payload)
+        z['entry_analysis_snapshot']=entry_snapshot
+        z['self_learning_review']=VPOST.review(z,diagnosis,entry_snapshot,raw_payload=payload)
         VLE.mark_trade(z,dict(r0))
         z['today_msk']=(_v90j_msk_date(cl)==datetime.now(timezone(timedelta(hours=3))).date())
         # The UI/learning layer uses flattened fields above. Do not retain duplicate
@@ -3339,8 +3343,16 @@ def trade_report(pg_connect,limit=2500):
         'deduplicated_portfolio_records':max(0,len(rows)-len(unique_all)),
         'today_missing_fields':missing,
         'today_recovery':recovery,
+        'self_learning_trades':[x for x in rows[:100] if x.get('self_learning_review')],
+        'self_learning_review_count':sum(1 for x in rows if x.get('self_learning_review')),
+        'self_learning_owner_review_queue':[
+            {'trade_id':x.get('trade_id'),'portfolio_name':x.get('portfolio_name'),
+             'asset':x.get('asset'),'closed_at':x.get('closed_at'),'proposal':proposal}
+            for x in rows for proposal in ((x.get('self_learning_review') or {}).get('proposals') or [])
+            if proposal.get('status')=='OWNER_REVIEW_REQUIRED'
+        ][:100],
         'archive_window':min(5000,max(50,int(limit or 2500))),
-        'display_policy':'today full detail; older portfolio results + unique learning episodes only',
+        'display_policy':'today full detail; historical postmortems + older unique learning episodes',
         'learning_policy':'one canonical market episode once; portfolio duplicates aggregated before self-learning',
     })
     sig=(result.get('today_closed_count'),result.get('older_closed_count'),
