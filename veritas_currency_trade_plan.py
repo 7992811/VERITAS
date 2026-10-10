@@ -521,7 +521,16 @@ def prepare_entry(row, admission, spec, account, quote, *, now, action=None, hel
     cap = decimal(CTC.PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"])
     if stop_risk > nav * cap:
         raise TradePlanBlocked("FINAL_CONTRACT_STOP_RISK_EXCEEDED")
+    impulse_reference = bool(levels.get("fixed_take_profit_deferred")
+                             or levels.get("target_reference_only")
+                             or plan.get("fixed_take_profit_deferred")
+                             or plan.get("target_reference_only"))
     terms.update(lots=lots, stop_price=stop, target_price=target, horizon=str(row.get("horizon")),
+                 fixed_take_profit_deferred=impulse_reference,
+                 target_reference_only=impulse_reference,
+                 event_impulse_exit_mode=(levels.get("event_impulse_exit_mode")
+                                          or plan.get("event_impulse_exit_mode")
+                                          or ("STRUCTURAL_EXHAUSTION_ONLY" if impulse_reference else None)),
                  target_fraction=fraction, currency_nav_rub=nav, high_water_rub=decimal(account.high_water_rub),
                  sizing_mode="INITIAL_MINIMUM_CONTRACT" if minimum_entry else "CANONICAL_TARGET_FLOOR",
                  nominal_target_lots=target_lots, resulting_position_lots=exposure_lots,
