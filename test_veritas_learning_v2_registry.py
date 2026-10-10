@@ -160,6 +160,14 @@ class LearningV2RegistryTests(unittest.TestCase):
         self.assertIn("WHERE version=%s AND asset=%s",source)
         self.assertIn("learning_v2_registry_asset_status",inspect.getsource(R.ensure_schema))
 
+    def test_sync_batches_registration_and_prospective_updates(self):
+        source=inspect.getsource(R.sync)
+        self.assertGreaterEqual(source.count("jsonb_to_recordset"),2)
+        self.assertIn("INSERT INTO learning_v2_registry",source)
+        self.assertIn("UPDATE learning_v2_registry AS r",source)
+        self.assertIn("ON CONFLICT(candidate_id) DO NOTHING",source)
+        self.assertNotIn('c.execute("""UPDATE learning_v2_registry SET status=%s',source)
+
     def test_hypothesis_id_is_stable_when_training_evidence_grows(self):
         scope={"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p"}
         a=L2._hypothesis("ENTRY_BLOCKER_RELAXATION",scope,{"blocker":"X"},{"n":24})
