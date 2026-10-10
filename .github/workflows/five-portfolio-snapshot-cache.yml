@@ -1,0 +1,35 @@
+name: Five Portfolio Snapshot Cache CI
+on:
+  push:
+    branches: [ "ci/five-portfolio-snapshot-cache-a3d326d" ]
+permissions:
+  contents: read
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_ephemeral_test_only
+          POSTGRES_DB: veritas_quality_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d veritas_quality_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - run: pip install -r requirements-intelligence.txt
+      - name: Compile touched runtime
+        run: python -m py_compile veritas_accounting_io.py veritas_portfolio.py veritas_portfolio_cycle.py
+      - name: Unit snapshot and portfolio regressions
+        run: python -m unittest -v test_veritas_accounting_io.py test_veritas_portfolio_cycle.py test_veritas_r46_snapshot_borrowing.py test_veritas_book_marking.py
+      - name: Native PostgreSQL portfolio-cycle regressions
+        env:
+          VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
+        run: python -m unittest -v test_veritas_portfolio_cycle_sql.py test_veritas_book_marking_sql.py
