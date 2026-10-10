@@ -949,7 +949,8 @@ class TBankTradingAdapter:
             raise TradingError("INVALID_HISTORICAL_RECOVERY_PAGE_LIMIT")
         if type(max_candidates) is not int or not 1 <= max_candidates <= 200:
             raise TradingError("INVALID_HISTORICAL_RECOVERY_CANDIDATE_LIMIT")
-        center = datetime.fromisoformat(_timestamp(sent_at))
+        center = datetime.fromisoformat(_timestamp(
+            sent_at.isoformat() if isinstance(sent_at, datetime) else sent_at))
         now = datetime.now(timezone.utc)
         start = center - timedelta(minutes=window_minutes)
         end = min(now, center + timedelta(minutes=window_minutes))
