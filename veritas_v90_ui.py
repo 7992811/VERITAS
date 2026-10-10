@@ -1739,8 +1739,17 @@ function normalizeIntelligence(raw,progress,library){
 function renderIntelligence(){
   const i=st.intelligence||{},c=i.components||{};
   if(i.score==null){$('intelligence').innerHTML='<div class="msg warn">Оценка интеллекта пока недоступна. Обновление выполняется автоматически.</div>'+autonomousLearningHtml(st.autonomous||i.autonomous_learning);return}
-  const score=Number(i.score||0),conf={LOW:'низкая',MEDIUM:'средняя',HIGH:'высокая'}[String(i.confidence||'').toUpperCase()]||'формируется';
+  const score=Number(i.score||0);
   const numOrNull=v=>v==null||v===''||typeof v==='boolean'?null:(Number.isFinite(Number(v))?Number(v):null);
+  const coverageMeta=i.coverage||{},coverageObserved=numOrNull(coverageMeta.observed_max_points),coverageTotal=numOrNull(coverageMeta.total_max_points);
+  let confidenceKey=String(i.confidence||'').toUpperCase();
+  if(coverageObserved!=null&&coverageTotal>0){
+    const coverageRatio=coverageObserved/coverageTotal;
+    if(coverageRatio<.50)confidenceKey='LOW';
+    else if(coverageRatio<1&&confidenceKey==='HIGH')confidenceKey='MEDIUM';
+  }
+  const conf={LOW:'низкая',MEDIUM:'средняя',HIGH:'высокая'}[confidenceKey]||'формируется';
+  const staleView=!!i.refresh_delayed;
   const real=!!i.real_asset_management_index;
   const comp=real?[
     ['Решения рынка',numOrNull(c.decision_intelligence),20,'decision_intelligence'],
@@ -1768,20 +1777,25 @@ function renderIntelligence(){
     const ivDelta=iv.delta_points==null?'—':(Number(iv.delta_points)>=0?'+':'')+Number(iv.delta_points).toFixed(1)+' п.';
     const aiHit=sa.hit_rate_delta_pp==null?'—':(Number(sa.hit_rate_delta_pp)>=0?'+':'')+Number(sa.hit_rate_delta_pp).toFixed(1)+' п.п.';
     const aiCap=sa.large_move_capture_delta_pp==null?'—':(Number(sa.large_move_capture_delta_pp)>=0?'+':'')+Number(sa.large_move_capture_delta_pp).toFixed(1)+' п.п.';
+    const aiStatus=({MEASURABLE:'измеримо',PARTIAL:'частично измеримо',BUILDING:'выборка формируется'})[String(sa.status||'BUILDING').toUpperCase()]||'выборка формируется';
+    const aiHitText=sa.hit_rate_delta_pp==null?'точность: выборка формируется':aiHit+' точность';
     const roll=rb.delta_points==null?'—':(Number(rb.delta_points)>=0?'+':'')+Number(rb.delta_points).toFixed(1);
     const le=(i.evidence||{}).learning_episodes||{},badEarly=numOrNull(le.early_bad_rate),badRecent=numOrNull(le.recent_bad_rate),rEarly=numOrNull(le.early_realization),rRecent=numOrNull(le.recent_realization);
     const learnText=(badEarly!=null&&badRecent!=null)?(100*badEarly).toFixed(0)+'% → '+(100*badRecent).toFixed(0)+'% ошибок':'выборка формируется';
     const realText=(rEarly!=null&&rRecent!=null)?(100*rEarly).toFixed(0)+'% → '+(100*rRecent).toFixed(0)+'% реализации':'—';
     compare='<div class="intel-compare">'+
       '<div class="intel-compare-card"><span>К стартовому VERITAS</span><b class="'+(Number(iv.delta_points||0)>=0?'ok':'bad')+'">'+ivDelta+'</b><em>индекс решений: '+esc(iv.current??'—')+' при базе 100</em></div>'+
-      '<div class="intel-compare-card"><span>К AI без памяти</span><b class="'+(Number(sa.hit_rate_delta_pp||0)>=0?'ok':'bad')+'">'+aiHit+' точность</b><em>'+aiCap+' захват · n='+esc(sa.sample_n??0)+' · '+esc(sa.status||'BUILDING')+'</em></div>'+
+      '<div class="intel-compare-card"><span>К AI без памяти</span><b class="'+(sa.hit_rate_delta_pp==null?'warn':Number(sa.hit_rate_delta_pp)>=0?'ok':'bad')+'">'+aiHitText+'</b><em>'+aiCap+' захват · n='+esc(sa.sample_n??0)+' · '+esc(aiStatus)+'</em></div>'+
       '<div class="intel-compare-card"><span>Самообучение на сделках</span><b>'+learnText+'</b><em>реализация ожидаемого хода: '+realText+' · от запуска индекса '+roll+' п.</em></div>'+
     '</div>';
   }
+  const dailyScope=staleView?'на дату расчёта':'сегодня';
+  const dailyEpisodeNote=staleView?'по последнему завершённому расчёту':'новых завершённых сделок';
+  const dailyOutcomeNote=staleView?'по последнему завершённому расчёту':'решений с известным результатом';
   const daily='<div class="intel-daily">'+
-    '<div class="intel-daily-stat"><span>Эффективность сегодня</span><b class="'+trendClass+'">'+deltaText+' · '+trendText+'</b><em>не объём знаний, а изменение качества решений</em></div>'+
-    '<div class="intel-daily-stat"><span>Обучающих эпизодов</span><b>'+esc(episodes)+'</b><em>новых завершённых сделок</em></div>'+
-    '<div class="intel-daily-stat"><span>Проверенных исходов</span><b>'+esc(outcomes)+'</b><em>решений с известным результатом</em></div>'+
+    '<div class="intel-daily-stat"><span>Эффективность '+dailyScope+'</span><b class="'+trendClass+'">'+deltaText+' · '+trendText+'</b><em>не объём знаний, а изменение качества решений</em></div>'+
+    '<div class="intel-daily-stat"><span>Обучающих эпизодов</span><b>'+esc(episodes)+'</b><em>'+dailyEpisodeNote+'</em></div>'+
+    '<div class="intel-daily-stat"><span>Проверенных исходов</span><b>'+esc(outcomes)+'</b><em>'+dailyOutcomeNote+'</em></div>'+
     '<div class="intel-daily-stat"><span>Новых правил</span><b>'+(rulesToday==='—'?'—':'+'+esc(rulesToday))+'</b><em>информативно, сами по себе балл почти не дают</em></div>'+
     '<div class="intel-daily-stat"><span>Новых источников</span><b>'+(sourcesToday==='—'?'—':'+'+esc(sourcesToday))+'</b><em>информативно, без доказанной пользы не повышают интеллект</em></div>'+
   '</div>';
