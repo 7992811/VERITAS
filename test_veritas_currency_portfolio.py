@@ -201,6 +201,16 @@ class CurrencyPortfolioTests(TestCase):
         self.assertIn('paper-champ',[x['trade_id'] for x in merged])
         self.assertIn(trade['trade_id'],[x['trade_id'] for x in merged])
 
+    def test_live_currency_dashboard_uses_portfolio_native_risk_governor(self):
+        t=datetime(2026,10,9,11,0,tzinfo=timezone.utc)
+        live=CD.project_live_currency(self._live_account(),[],[],[],checked_at=t)
+        risk=live['portfolio']['risk_governor']
+        self.assertEqual(risk['profile'],'CURRENCY')
+        self.assertEqual(risk['state'],'NORMAL')
+        self.assertEqual(risk['max_gross'],10.0)
+        self.assertEqual(risk['hard_drawdown_limit'],.35)
+        self.assertEqual(risk['max_stop_risk_nav'],.15)
+
     def test_live_currency_open_position_is_visible_from_live_ledger(self):
         t=datetime(2026,10,9,11,0,tzinfo=timezone.utc)
         account=self._live_account(
