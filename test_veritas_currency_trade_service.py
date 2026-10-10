@@ -128,6 +128,14 @@ class FakeCoordinator:
 
 
 class TradeHttpRepositoryTests(unittest.TestCase):
+    def wait_reconcile(self):
+        for _ in range(1000):
+            with self.app._reconcile_state_lock:
+                if not self.app._reconcile_inflight:
+                    return
+            threading.Event().wait(.001)
+        self.fail("background reconcile did not finish")
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.now = NOW
@@ -352,6 +360,7 @@ class TradeHttpRepositoryTests(unittest.TestCase):
             contract_notional=D('12769'), target_lots=0, held_lots=0, max_gross=D('10'))
         with patch.object(self.coordinator, 'prepare_next', side_effect=failure):
             self.assertEqual(self.request('poll')[1], 200)
+        self.wait_reconcile()
         calls = list(self.coordinator.calls)
         facts_calls = list(self.facts.calls)
         observed = self.request('status')[0]
@@ -369,6 +378,7 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         failure, _, _, _ = stale_failure()
         with patch.object(self.coordinator, 'prepare_next', side_effect=failure):
             self.assertEqual(self.request('poll')[1], 200)
+        self.wait_reconcile()
         calls, facts_calls = list(self.coordinator.calls), list(self.facts.calls)
         observed = self.request('status')[0]
         self.assertEqual(observed['last_poll_entry_diagnostics'], failure.entry_diagnostics)
