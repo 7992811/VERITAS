@@ -1287,6 +1287,7 @@ def _v90r46_mark_trend_hold(c,name,candidates,summary,ts,positions=None):
     except Exception:
         return marked
 
+    import veritas_structural_lifecycle as VSL
     for z0 in rows or []:
         z=dict(z0)
         asset=str(z.get('asset') or '')
@@ -1297,6 +1298,45 @@ def _v90r46_mark_trend_hold(c,name,candidates,summary,ts,positions=None):
             except Exception:
                 row={}
         ctx=_v90r46_hold_context(name,z,row)
+        current=_v90j_json(z.get('payload'))
+        ti=(row or {}).get('trend_impulse') or {}
+        st=(row or {}).get('intraday_structure') or {}
+        regime=str((row or {}).get('regime') or '')
+        try:
+            rv=abs(float((row or {}).get('realized_vol') or 0.0))
+        except Exception:
+            rv=0.0
+        try:
+            previous_rv=abs(float(current.get('r46_last_realized_vol') or 0.0))
+        except Exception:
+            previous_rv=0.0
+        flags=[ti.get('volatility_expansion'),st.get('volatility_expansion')]
+        explicit_expansion=any(value is True for value in flags)
+        explicit_contraction=any(value is False for value in flags)
+        rv_contraction=bool(rv>0 and previous_rv>0 and rv<=previous_rv*0.90)
+        regime_contraction=bool(('LOW_VOL' in regime or 'MID_VOL' in regime)
+                                and 'HIGH_VOL' not in regime)
+        volatility_contracted=bool(
+            not explicit_expansion and
+            (explicit_contraction or rv_contraction or regime_contraction)
+        )
+        signal_direction=str((row or {}).get('research_decision') or 'NO_TRADE')
+        held_direction=str(z.get('direction') or '')
+        non_opposite=signal_direction not in ('LONG','SHORT') or signal_direction==held_direction
+        phase=str(ctx.get('trend_phase') or '')
+        exhaustion_candidate=bool(
+            not ctx.get('active')
+            and not ctx.get('hard_thesis_exit')
+            and non_opposite
+            and phase not in ('TREND_DAY','IMPULSE_TREND')
+        )
+        try:
+            prior_count=int(current.get('r46_impulse_exhaustion_observation_count') or 0)
+        except Exception:
+            prior_count=0
+        exhaustion_count=min(9,prior_count+1) if exhaustion_candidate and volatility_contracted else 0
+        exhaustion_confirmed=bool(exhaustion_count>=2)
+
         semantic={
           'r46_trend_hold_active':bool(ctx.get('active')),
           'r46_same_direction':bool(ctx.get('same_direction')),
@@ -1304,8 +1344,26 @@ def _v90r46_mark_trend_hold(c,name,candidates,summary,ts,positions=None):
           'r46_trend_phase':ctx.get('trend_phase'),
           'r46_horizon_state':ctx.get('horizon_state'),
           'r46_tp_runner_ratio':float(ctx.get('tp_runner_ratio') or 0.50),
+          'r46_last_realized_vol':rv if rv>0 else current.get('r46_last_realized_vol'),
+          'r46_volatility_contracted':volatility_contracted,
+          'r46_impulse_exhaustion_observation_count':exhaustion_count,
+          'r46_impulse_exhaustion_confirmed':exhaustion_confirmed,
         }
-        current=_v90j_json(z.get('payload'))
+
+        if ctx.get('active'):
+            invalidated=VSL.invalidate_post_impulse_targets_on_reacceleration(z,ts)
+            if invalidated.get('invalidated'):
+                semantic.update(invalidated.get('patch') or {})
+        elif not ctx.get('hard_thesis_exit'):
+            px=(row or {}).get('price') or z.get('last_price') or z.get('avg_entry_price')
+            rebuilt=VSL.rebuild_targets_after_impulse(
+                z,row,px,ts,
+                exhaustion_confirmed=exhaustion_confirmed,
+                volatility_contracted=volatility_contracted)
+            if rebuilt.get('patch'):
+                semantic.update(rebuilt.get('patch') or {})
+            semantic['r46_post_impulse_target_rebuild_reason']=rebuilt.get('reason')
+
         changed=any(current.get(key)!=value for key,value in semantic.items())
         if changed:
             patch=dict(semantic,r46_hold_updated_at=_v90j_iso(ts))
@@ -1323,7 +1381,12 @@ def _v90r46_mark_trend_hold(c,name,candidates,summary,ts,positions=None):
                 )
             if isinstance(z0,dict):
                 local=_v90j_json(z0.get('payload')); local.update(patch); z0['payload']=local
-        marked.append({'asset':asset,**ctx,'state_changed':changed})
+        marked.append({'asset':asset,**ctx,'state_changed':changed,
+                       'volatility_contracted':volatility_contracted,
+                       'exhaustion_observation_count':exhaustion_count,
+                       'exhaustion_confirmed':exhaustion_confirmed,
+                       'post_impulse_target_status':semantic.get('post_impulse_target_rebuild_status')
+                                                    or current.get('post_impulse_target_rebuild_status')})
     return marked
 
 def _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=None):
