@@ -21,16 +21,26 @@ jobs:
           import json, traceback, sys
           import test_veritas_r46_snapshot_borrowing as T
           import veritas_portfolio_runtime as R
-          orig=R._v90r46_giveback_harvest
-          def traced(*args,**kwargs):
-              c=args[0]
-              print("BEFORE="+json.dumps(c.position,default=str,sort_keys=True),file=sys.stderr)
-              out=orig(*args,**kwargs)
-              print("HARVEST_RESULT="+json.dumps(out,default=str,sort_keys=True),file=sys.stderr)
-              print("AFTER="+json.dumps(c.position,default=str,sort_keys=True),file=sys.stderr)
-              print("WRITES="+json.dumps(c.writes,default=str),file=sys.stderr)
-              return out
-          R._v90r46_giveback_harvest=traced
+          original_builder=T.r46_wrapper
+          def builder(namespace,legacy=False):
+              for key in ('_portfolio_rows','_mark_nav','_v90j_update_excursions',
+                          '_v90r46_mark_trend_hold','_v90r46_giveback_harvest'):
+                  original=namespace[key]
+                  def wrapped(*args,__key=key,__original=original,**kwargs):
+                      c=args[0] if args else None
+                      print("CALL="+__key,file=sys.stderr)
+                      try:
+                          out=__original(*args,**kwargs)
+                      except Exception as exc:
+                          print("RAISE="+__key+":"+type(exc).__name__+":"+str(exc),file=sys.stderr)
+                          raise
+                      if __key=='_v90r46_giveback_harvest':
+                          print("HARVEST_RESULT="+json.dumps(out,default=str,sort_keys=True),file=sys.stderr)
+                          print("AFTER="+json.dumps(c.position,default=str,sort_keys=True),file=sys.stderr)
+                      return out
+                  namespace[key]=wrapped
+              return original_builder(namespace,legacy)
+          T.r46_wrapper=builder
           case=T.R46WrapperBorrowingTests()
           try:
               print(case.run_passes(False))
