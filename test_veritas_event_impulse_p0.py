@@ -8,6 +8,7 @@ import veritas_structural_lifecycle as VSL
 import veritas_trend_day_efficiency as VTDE
 
 
+# Verification branch: run the dedicated P0 suite on the exact current main.
 class IntrabarGameChangerP0Tests(unittest.TestCase):
     def event_row(self):
         event={
