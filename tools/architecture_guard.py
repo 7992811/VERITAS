@@ -47,6 +47,9 @@ def _canonical_static_contract():
     runtime = Path("veritas_portfolio_runtime.py").read_text(encoding="utf-8")
     portfolio = Path("veritas_portfolio.py").read_text(encoding="utf-8")
     intelligence = Path("veritas_intelligence.py").read_text(encoding="utf-8")
+    currency_live = Path("veritas_currency_live_admission.py").read_text(encoding="utf-8")
+    currency_roles = Path("veritas_strategy_roles.py").read_text(encoding="utf-8")
+    currency_learning = Path("veritas_currency_live_learning.py").read_text(encoding="utf-8")
     failures = []
 
     for marker in (
@@ -113,6 +116,28 @@ def _canonical_static_contract():
     if not Path("legacy/veritas_start_v72.py").exists():
         failures.append("archived v72 launcher missing from audit archive")
 
+    if "CURRENCY_EVENT_IMPULSE_POLICY" not in constitution:
+        failures.append("Currency event impulse bridge policy is missing")
+    for marker in ('"allow_temporary_cap_expansion":False',
+                   '"allow_dynamic_tp_override":False',
+                   '"risk_authority":"currency_live_risk_policy"'):
+        if marker not in constitution:
+            failures.append(f"Currency bridge weakened or incomplete: {marker}")
+    if '"1m":4.5' not in canonical:
+        failures.append("Currency fresh 1m continuation priority is missing")
+    if "CURRENCY_CONFIRMED_STRUCTURAL_ENTRY" not in currency_roles:
+        failures.append("Currency structural authority marker is missing")
+    if "NORMAL_STRUCTURAL_AUTHORITY" not in currency_live:
+        failures.append("Currency LIVE admission does not honor canonical structural authority")
+    old_probability_veto = (
+        'entry_mode == "NORMAL" and terms.get("currency_probability_required") is True'
+    )
+    if old_probability_veto in currency_live:
+        failures.append("legacy Currency probability veto reintroduced in LIVE admission")
+    for marker in ('"automatic_action": False', '"promotion_required":',
+                   "CURRENCY_MANAGEMENT_SHADOW_CANDIDATE"):
+        if marker not in currency_learning:
+            failures.append(f"Currency live learning shadow invariant missing: {marker}")
     if "import veritas_portfolio" in canonical:
         failures.append("canonical runtime must not import legacy portfolio engine")
     for marker in ("def currency_candidate_book(summary, now=None):","def local_confirmation_gate(row,event=None):"):
