@@ -141,6 +141,34 @@ jobs:
       - name: Architecture debt guard
         run: python tools/architecture_guard.py
 
+  learning-v2-registry-smoke:
+    name: Learning V2 registry PostgreSQL smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    services:
+      registry-postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_ephemeral_test_only
+          POSTGRES_DB: veritas_quality_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d veritas_quality_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - name: Install minimal registry dependencies
+        run: pip install psycopg[binary]
+      - name: Batch registry PostgreSQL smoke
+        env:
+          VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
+        run: python -m unittest -v test_veritas_learning_v2_registry.LearningV2RegistryTests.test_batch_sync_executes_on_real_postgres_and_is_idempotent
+
+
   learning-sql:
     name: Learning SQL runtime regressions
     runs-on: ubuntu-latest
