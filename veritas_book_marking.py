@@ -19,7 +19,7 @@ MARK_FIELDS = (
 MARK_SQL = position_sql(MARK_FIELDS)
 
 
-def _write_mark_batch(c, rows):
+def _write_mark_batch(c, rows, ts):
     if not rows:
         return
     encoded=json.dumps(rows,ensure_ascii=False,default=str)
@@ -27,18 +27,18 @@ def _write_mark_batch(c, rows):
         """WITH delta AS (
              SELECT * FROM jsonb_to_recordset(%s::jsonb)
              AS d(portfolio_name text,asset text,last_price double precision,
-                  updated_at timestamptz,patch jsonb,replace_payload boolean)
+                  patch jsonb,replace_payload boolean)
            )
            UPDATE paper_positions AS target
               SET last_price=delta.last_price,
-                  updated_at=delta.updated_at,
+                  updated_at=%s,
                   payload=CASE WHEN delta.replace_payload
                                THEN delta.patch
                                ELSE target.payload || delta.patch END
              FROM delta
             WHERE target.portfolio_name=delta.portfolio_name
               AND target.asset=delta.asset""",
-        (encoded,)
+        (encoded,ts)
     )
 
 
@@ -96,8 +96,8 @@ def mark_open_positions(c, name, prices, ts, *, positions=None, quote_for_positi
             replace=True
         pending.append({
             'portfolio_name':name,'asset':asset,'last_price':price,
-            'updated_at':iso(ts),'patch':value,'replace_payload':replace,
+            'patch':value,'replace_payload':replace,
         })
-    _write_mark_batch(c,pending)
+    _write_mark_batch(c,pending,ts)
     return len(pending)
 
