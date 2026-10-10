@@ -118,14 +118,14 @@ class MemoryConnection:
                 raise AssertionError(query)
             return SimpleNamespace(fetchall=lambda: rows)
         if query.startswith('WITH delta AS') and 'UPDATE paper_positions AS target' in query:
-            batch=json.loads(params[0])
+            batch=json.loads(params[0]); timestamp=params[1]
             for item in batch:
                 row=next(r for r in self.rows if
                          (r['portfolio_name'],r['asset'])==(item['portfolio_name'],item['asset']))
                 change=item['patch']
                 row['payload']=(change if item['replace_payload']
                                 else dict(row['payload'],**change))
-                row.update(last_price=float(item['last_price']),updated_at=item['updated_at'])
+                row.update(last_price=float(item['last_price']),updated_at=timestamp)
             return SimpleNamespace(rowcount=len(batch))
         if query.startswith('UPDATE paper_positions'):
             price, ts, encoded, name, asset = params
