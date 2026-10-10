@@ -42,7 +42,9 @@ def authorize_candidate(candidate: LiveCandidate,
                         promotion_evidence: VPROM.PromotionEvidence,
                         durable_storage: bool,
                         broker_reconciled: bool,
-                        kill_switch: bool = False) -> Dict[str, Any]:
+                        kill_switch: bool = False,
+                        risk_profile: Optional[Dict[str, Any]] = None,
+                        probability_policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     proposed=VR.PositionRisk(
         asset=candidate.asset,
         direction=candidate.direction,
@@ -75,6 +77,8 @@ def authorize_candidate(candidate: LiveCandidate,
         weekly_pnl_pct=candidate.weekly_pnl_pct,
         broker_reconciled=broker_reconciled,
         kill_switch=kill_switch,
+        risk_profile=risk_profile,
+        probability_policy=probability_policy,
     )
 
     blockers=list(gate.get("blockers") or [])
@@ -103,6 +107,8 @@ def authorize_candidate(candidate: LiveCandidate,
         "risk":risk,
         "instrument":spec,
         "promotion":promotion,
+        "risk_profile":dict(risk_profile or {}),
+        "probability_policy":dict(probability_policy or {}),
         "model_version_match":model_match,
         "live_switch":arm,
         "version":VERSION,
