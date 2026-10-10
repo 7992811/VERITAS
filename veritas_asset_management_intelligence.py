@@ -90,7 +90,6 @@ def _static_ai_decision(payload):
     if margin <= -0.18:
         return "SHORT"
     return "NO_TRADE"
-
 def _independent_episodes(rows, limit=360, previous=None):
     ordered = sorted(rows, key=lambda r: str(r.get("event_ts") or ""))
     last = {} if previous is None else previous
@@ -128,8 +127,6 @@ def _independent_episodes(rows, limit=360, previous=None):
             "payload": dp, "reference_decision": _static_ai_decision(dp),
         })
     return out[-int(limit):]
-
-
 def _decision_metrics(episodes, decision_key="decision"):
     directional = hits = large = captured = wrong = no_trade = missed = 0
     utility = []
@@ -165,13 +162,9 @@ def _decision_metrics(episodes, decision_key="decision"):
         "wrong_side_rate": wrong / large if large else None,
         "no_trade_miss_rate": missed / no_trade if no_trade else None,
     }
-
-
 def _query_decision_episodes(c):
     rows = ami_decision_rows(c)
     return _independent_episodes([dict(r) for r in rows or []], 360)
-
-
 def _query_fresh_portfolio(c, epoch):
     r = c.execute("""
       SELECT COUNT(*) AS n,
@@ -210,8 +203,6 @@ def _query_fresh_portfolio(c, epoch):
         "profit_factor": (gw / gl) if gl > 1e-9 else (9.99 if gw > 0 else None),
         "max_drawdown": float(dd.get("dd") or 0.0),
     }
-
-
 def _query_learning(c):
     rows = list(c.execute("""
       SELECT closed_at,asset,horizon,regime,capture_ratio,movement_realization_ratio,
@@ -255,7 +246,6 @@ def _query_learning(c):
     def rate(name):
         return sum(1 for r in z if name in set(r.get("attributions") or [])) / n if n else None
     half = max(1, n // 2)
-    # A single episode cannot be its own before/after comparison.
     early, recent = (z[:half], z[-half:]) if n >= 2 else ([], [])
     def bad_rate(a):
         return sum(1 for r in a if set(r.get("attributions") or []) & BAD_LEARNING_ATTRS) / len(a) if a else None
@@ -280,8 +270,6 @@ def _query_learning(c):
         "early_bad_rate": bad_rate(early), "recent_bad_rate": bad_rate(recent),
         "early_realization": avg_real(early), "recent_realization": avg_real(recent),
     }
-
-
 def _query_knowledge(c, episodes):
     totals = c.execute("""
       SELECT
@@ -320,8 +308,6 @@ def _query_knowledge(c, episodes):
         "applied_hit_rate": met.get("hit_rate"),
         "applied_utility": met.get("avg_normalized_utility"),
     }
-
-
 def _baseline(c, score, components, component_status):
     key = "asset_management_intelligence_v1_rollout"
     try:
@@ -351,25 +337,18 @@ def _baseline(c, score, components, component_status):
         }
     except Exception:
         return {"score": None, "components": {}, "captured_at": None, "version": None}
-
-
 def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, cache_seconds=55, publish=True, inputs=None):
     now = time.time()
     if (_CACHE.get("value") is not None and _CACHE.get("epoch") == production_epoch
             and now - float(_CACHE.get("at") or 0.0) < cache_seconds):
         return dict(_CACHE["value"])
-
     with pg_connect() as c:
-        # refresh_snapshot owns the explicit transaction and query deadline.
-        # SET LOCAL on the production autocommit connection alone has no effect.
         episodes = inputs["episodes"] if inputs is not None else _query_decision_episodes(c)
         veritas = _decision_metrics(episodes)
         generic = _decision_metrics(episodes, "reference_decision")
         portfolio = inputs["portfolio"] if inputs is not None else _query_fresh_portfolio(c, production_epoch)
         learning = inputs["learning"] if inputs is not None else _query_learning(c)
         knowledge = inputs["knowledge"] if inputs is not None else _query_knowledge(c, episodes)
-
-        # 1) Market decision intelligence: 20.
         hit = veritas.get("hit_rate")
         cap = veritas.get("capture_rate")
         wrong = veritas.get("wrong_side_rate")
@@ -380,8 +359,6 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
             + 3.0 * _scale(None if wrong is None else 1.0 - wrong, 0.70, 0.95)
             + 3.0 * _scale(util, -0.10, 0.25)
         )
-
-        # 2) Fresh production-candidate outcomes: 25. Lack of evidence earns no credit.
         n = portfolio["n"]
         raw_outcome = (
             10.0 * _scale(portfolio.get("win_rate"), 0.35, 0.65)
@@ -391,8 +368,6 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
             + 3.0 * _scale(0.15 - portfolio.get("max_drawdown", 0.15), 0.0, 0.12)
         )
         outcome_score = raw_outcome * min(1.0, n / 50.0)
-
-        # 3) Movement/risk management: 15, based on clean completed learning episodes.
         movement_score = (
             6.0 * _scale(learning.get("avg_capture_ratio"), 0.15, 0.60)
             + 3.0 * _scale(learning.get("avg_movement_realization_ratio"), 0.15, 0.60)
@@ -400,8 +375,6 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
             + (2.0 * (1.0 - _clip(learning["exit_capture_error_rate"])) if learning.get("exit_capture_error_rate") is not None else 0.)
             + (2.0 * (1.0 - _clip(learning["cost_drag_rate"])) if learning.get("cost_drag_rate") is not None else 0.)
         )
-
-        # 4) Knowledge: breadth is deliberately only 2/15; validation/application dominate.
         applied_quality = 0.5 * _scale(knowledge.get("applied_hit_rate"), 0.45, 0.65)                           + 0.5 * _scale(knowledge.get("applied_utility"), -0.10, 0.25)
         validation_factor = min(1.0, knowledge["validated_oos_rules"] / 10.0)
         knowledge_score = (
@@ -413,8 +386,6 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
                 + 4.0 * applied_quality
             )
         )
-
-        # 5) Independent experience and diversity: 10.
         assets = len({e["asset"] for e in episodes if e.get("asset")})
         horizons = len({e["horizon"] for e in episodes if e.get("horizon")})
         regimes = len({e["regime"] for e in episodes if e.get("regime")})
@@ -425,10 +396,7 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
             + 3.0 * diversity
             + 3.0 * min(1.0, learning["n"] / 100.0)
         )
-
-        # 6) Self-learning effectiveness: 15.
         self_learning_score, self_learning_status = _self_learning_component(learning, learning_progress)
-
         components = {
             "decision_intelligence": round(decision_score, 2) if episodes else None,
             "portfolio_outcome_quality": round(outcome_score, 2) if n else None,
@@ -444,10 +412,8 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
         }
         component_status, coverage = component_measurement(
             components, maximums, veritas, learning, knowledge, self_learning_status)
-        # Preserve the original weights; missing evidence never inflates the scale.
         score = round(sum(value for value in components.values() if value is not None), 1)
         baseline = _baseline(c, score, components, component_status)
-
     generic_status = "MEASURABLE" if generic.get("n", 0) >= 30 else "BUILDING"
     hit_delta = None
     if veritas.get("hit_rate") is not None and generic.get("hit_rate") is not None:
@@ -458,7 +424,6 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
     utility_delta = None
     if veritas.get("avg_normalized_utility") is not None and generic.get("avg_normalized_utility") is not None:
         utility_delta = veritas["avg_normalized_utility"] - generic["avg_normalized_utility"]
-
     rollout_delta = None
     baseline_comparable = baseline_is_comparable(baseline, VERSION, components, component_status)
     if baseline.get("score") is not None and baseline_comparable:
@@ -519,31 +484,19 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
     if publish:
         _publish_cache(value, production_epoch, time.time())
     return dict(value)
-
-
 def _publish_cache(value, epoch, observed_at):
     from veritas_scorecard_delivery import publish_cache
     return publish_cache(globals(), value, epoch, observed_at)
-
-
 def cached_scorecard(production_epoch, max_age_seconds=120):
     from veritas_scorecard_delivery import cached_scorecard
     return cached_scorecard(globals(), production_epoch, max_age_seconds)
-
-
 def refresh_snapshot(pg_connect, learning_progress, production_epoch, *, context=None, cursor=None):
     from veritas_scorecard_delivery import refresh_snapshot
     return refresh_snapshot(globals(), pg_connect, learning_progress, production_epoch, context=context, cursor=cursor)
-
-
 def build_scorecard(pg_connect, learning_progress, production_epoch, cache_seconds=55):
-    # Startup and concurrent dashboard readers share one computation. The cache
-    # check runs under the lock, so waiting readers reuse the completed result.
     with _BUILD_LOCK:
         return _build_scorecard_unlocked(
             pg_connect, learning_progress, production_epoch, cache_seconds)
-
-
 def startup_snapshot(pg_connect, learning_progress, production_epoch, delay_seconds=12):
     from veritas_scorecard_delivery import startup_snapshot
     return startup_snapshot(globals(), production_epoch, delay_seconds)
