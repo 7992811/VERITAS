@@ -48,14 +48,23 @@ def gate(row, mode):
                         probability_required=False, probability_bypass=True,
                         structure_basis='VERIFIED_QUOTE_BREAK_WITH_PROTECTED_PARENT')
         calibrated=row.get('calibrated_probability')
+        fallback=row.get('_pwin',row.get('confidence'))
+        source='EMPIRICAL_CALIBRATION'
         try:
             probability=float(calibrated)
             if not math.isfinite(probability):
                 raise ValueError
         except (TypeError,ValueError):
-            return dict(base, eligible=False, reason='CURRENCY_CALIBRATED_PROBABILITY_REQUIRED',
-                        entry_mode='NORMAL', probability_required=True)
-        base['calibrated_probability']=probability
+            try:
+                probability=float(fallback)
+                if not math.isfinite(probability):
+                    raise ValueError
+                source='MODEL_QUALITY_SCORE_UNCALIBRATED'
+            except (TypeError,ValueError):
+                return dict(base, eligible=False, reason='CURRENCY_PROBABILITY_REQUIRED',
+                            entry_mode='NORMAL', probability_required=True)
+        base['decision_probability']=probability
+        base['decision_probability_source']=source
         if probability < float(rule['threshold']):
             return dict(base, eligible=False, reason='CURRENCY_PROBABILITY_BELOW_THRESHOLD',
                         entry_mode='NORMAL', probability_required=True)
