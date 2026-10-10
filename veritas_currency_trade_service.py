@@ -848,7 +848,6 @@ class TradeHttpApplication:
                     "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
                     "robot_autotrade_enabled": self.robot_autotrade_enabled,
                     "block_reason": "CURRENCY_ACCOUNT_NOT_BOUND"}
-        self._schedule_reconcile()
         if callable(getattr(self, "console_binding", None)) and self.console_binding().get("paused", True):
             self._remember_poll("PROPOSALS_PAUSED", binding_state="bound")
             return {"ok": True, "enabled": True, "items": [], "execution_enabled": False,
@@ -942,6 +941,8 @@ class TradeHttpApplication:
             pending = self._pending()
         items = ([] if (self.sandbox_autotrade_enabled or self.robot_autotrade_enabled) else
                  [self._public(p) for p in pending if p.get("status") == "PENDING_DELIVERY"][:1])
+        if unsettled:
+            self._schedule_reconcile()
         self._remember_poll(reason, binding_state="bound", pending=len(pending),
                             unsettled=len(unsettled), sizing=sizing, entry_diagnostics=entry_diagnostics)
         with self._reconcile_state_lock:
