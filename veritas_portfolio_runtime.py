@@ -11,6 +11,7 @@ import veritas_canonical_runtime as VCR
 import veritas_timeframe_policy as TFP
 import veritas_release as VR, veritas_execution_efficiency as VEE
 import veritas_portfolio_reporting as VPRPT
+import veritas_trend_day_efficiency as VTDE
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42

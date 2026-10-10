@@ -438,13 +438,12 @@ class EventImpulseP0Tests(unittest.TestCase):
         self.assertEqual(blocked["reason"],"OWNER_P0_EVENT_IMPULSE_FIXED_TP_DEFERRED")
         self.assertEqual(blocked["target_reference_mode"],"HIGHER_TIMEFRAME_HIGHS_AND_ZONES")
         position["payload"]["r46_trend_hold_active"]=False
-        ladder=[
-            {"price":2395.0,"fraction":0.5,"kind":"TP1"},
-            {"price":2400.0,"fraction":0.5,"kind":"TP2"},
-        ]
-        with patch.object(VSL,"active_ladder",return_value=ladder):
-            released=VSL.target_reduction(position,2400.0,2400.0,"2026-10-09T20:47:00Z")
-        self.assertTrue(released["eligible"],released)
+        # Exhaustion does not reactivate stale pre-impulse targets. A fresh
+        # post-impulse ladder must first be rebuilt from current structure.
+        released=VSL.target_reduction(position,2400.0,2400.0,"2026-10-09T20:47:00Z")
+        self.assertFalse(released["eligible"],released)
+        self.assertTrue(released["deferred"],released)
+        self.assertEqual(released["reason"],"EVENT_IMPULSE_EXHAUSTED_FRESH_TARGETS_REQUIRED")
 
     def test_owner_2146_correction_rejects_2158_as_confirmation_time(self):
         snap=VUT.moex_2146_game_changer_snapshot()
