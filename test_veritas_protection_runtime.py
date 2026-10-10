@@ -263,7 +263,8 @@ class BoundedProtectiveTests(unittest.TestCase):
             self.assertEqual(G.run_protective_pass(None, c.connect, {'ETH': q}, NOW), [])
         selects = [sql for sql, args in c.sql if sql.startswith('SELECT') and 'advisory' not in sql]
         writes = [args for sql, args in c.sql if 'jsonb_to_recordset' in sql]
-        self.assertEqual(selects, [PR.PROTECTION_SQL+' ORDER BY portfolio_name,asset FOR UPDATE'])
+        self.assertEqual(selects, [PR.PROTECTION_SQL+
+            ' WHERE asset=ANY(%s) ORDER BY portfolio_name,asset FOR UPDATE'])
         self.assertEqual(len(writes), 2)
         self.assertEqual([len(json.loads(args[0])) for args in writes], [32, 1])
         self.assertEqual(c.commits, 1)
