@@ -15,8 +15,9 @@ jobs:
           python-version: "3.14.3"
       - run: pip install -r requirements-intelligence.txt
       - name: Trace R46 borrowed snapshot
-        shell: python
+        shell: bash
         run: |
+          python - <<'PY'
           import json, traceback
           import test_veritas_r46_snapshot_borrowing as T
           import veritas_portfolio_runtime as R
@@ -36,3 +37,4 @@ jobs:
           except Exception:
               traceback.print_exc()
               raise
+          PY
