@@ -720,7 +720,7 @@ def fast_entry_pass(ns,rows,now,*,runtime=False,portfolio_names=None):
         waiting_ordinary=int(lock_state.get('ordinary_waiters') or 0)>0
         reserved=False
         if pending and not waiting_ordinary:
-            VPG._mutex.reserve_entry_turn(2.0)
+            VPG._mutex.reserve_entry_turn()
             reserved=True
         else:
             VPG._mutex.cancel_entry_turn()
