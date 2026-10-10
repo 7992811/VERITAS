@@ -14,17 +14,31 @@ VERSION = "veritas-market-runtime-guard-v2"
 
 
 _MOEX_EXTENDED_INDEX_EFFECTIVE = datetime(2026, 9, 26, tzinfo=ZoneInfo("Europe/Moscow")).date()
+# Official MOEX 2026 schedule relevant after the index-extension epoch.
+# Weekend DSV is open unless explicitly excluded. IMOEX is calculated 10:00-19:00.
+_MOEX_2026_WEEKEND_CLOSED_AFTER_EXTENDED = {(10,24),(10,25),(12,5),(12,6)}
+_MOEX_2026_WEEKDAY_DSV_AFTER_EXTENDED = {(11,4)}
+_MOEX_2026_FULLY_CLOSED_AFTER_EXTENDED = {(12,31)}
 
 
 def moex_index_session_open(now=None):
-    """Versioned IMOEX calculation window; weekends remain calendar-gated."""
+    """Versioned IMOEX calculation window including official weekend sessions."""
     now = now or datetime.now(timezone.utc)
     msk = now.astimezone(ZoneInfo("Europe/Moscow"))
+    minute = msk.hour * 60 + msk.minute + msk.second / 60.0
+    day=(msk.month,msk.day)
+    if msk.date() >= _MOEX_EXTENDED_INDEX_EFFECTIVE:
+        if msk.year==2026 and day in _MOEX_2026_FULLY_CLOSED_AFTER_EXTENDED:
+            return False
+        if msk.weekday() >= 5:
+            if msk.year!=2026 or day in _MOEX_2026_WEEKEND_CLOSED_AFTER_EXTENDED:
+                return False
+            return 10 * 60 <= minute < 19 * 60
+        if msk.year==2026 and day in _MOEX_2026_WEEKDAY_DSV_AFTER_EXTENDED:
+            return 10 * 60 <= minute < 19 * 60
+        return 7 * 60 <= minute < 23 * 60 + 50
     if msk.weekday() >= 5:
         return False
-    minute = msk.hour * 60 + msk.minute + msk.second / 60.0
-    if msk.date() >= _MOEX_EXTENDED_INDEX_EFFECTIVE:
-        return 7 * 60 <= minute < 23 * 60 + 50
     return 9 * 60 + 50 <= minute < 19 * 60
 
 
@@ -32,8 +46,8 @@ def normalize_moex_index_session(bundle, now=None):
     """Repair stale pre-2026 session flags only from a fresh official IMOEX quote.
 
     The exchange quote itself is the holiday/session proof. We never promote a
-    cached, proxy, Yahoo or identity-less price, and weekends remain fail-closed
-    unless a dedicated official trading-calendar adapter is added.
+    cached, proxy, Yahoo or identity-less price. Weekend promotion is allowed
+    only inside the explicitly versioned official 2026 schedule above.
     """
     result = dict(bundle or {})
     raw0 = result.get("raw")
