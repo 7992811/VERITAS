@@ -130,8 +130,9 @@ def geometry(row, price=None, direction=None, stop_override=None, existing_targe
     stop = _number(stop_override if stop_override is not None else event.get('stop_price'))
     # Adds retain the held trade's executable target. The new event remains
     # immutable evidence of confirmation, not permission to replace that target.
+    game_changer=bool(new_rule and event.get('game_changer_extreme') is True)
     target = _number(existing_target_price if existing_target_price is not None
-                     else event.get('target_price'))
+                     else (event.get('runner_target_price') if game_changer else event.get('target_price')))
     sign = 1 if direction == 'LONG' else -1
     new_rule = SB.applies(context_of(r))
     out = {'version':SB.VERSION if new_rule else VERSION,
@@ -150,9 +151,14 @@ def geometry(row, price=None, direction=None, stop_override=None, existing_targe
         held = ((r.get('trade_plan') or {}).get('active_target_ladder') or [])
         ladder = deepcopy(held or [s for s in ladder
                                  if sign*(float(s['price'])-target) >= -1e-10])
-    weighted = sum(float(s['fraction'])*sign*(float(s['price'])-px)/px
-                   for s in ladder) if ladder else room
-    runner = float(ladder[-1]['price']) if ladder else target
+    # During a game-changing impulse no ladder step is executable yet.
+    # Use the higher-timeframe runner/reference for economics so an already
+    # passed micro target cannot block the causal entry. The immutable ladder
+    # remains evidence and is reconsidered only after impulse exhaustion.
+    weighted = (room if game_changer else
+                sum(float(s['fraction'])*sign*(float(s['price'])-px)/px
+                    for s in ladder) if ladder else room)
+    runner = target if game_changer else (float(ladder[-1]['price']) if ladder else target)
     return dict(out, eligible=True, reason='SAME_TF_GEOMETRY_OK', stop_price=stop,
                 target_price=target, remaining_move_pct=room, stop_distance_pct=risk,
                 reward_risk=weighted/risk, weighted_remaining_move_pct=weighted,
@@ -162,7 +168,10 @@ def geometry(row, price=None, direction=None, stop_override=None, existing_targe
                 stop_timeframe=event.get('stop_timeframe',event.get('timeframe')),
                 atr_timeframe=event.get('atr_timeframe',event.get('timeframe')),
                 geometry_basis='STORED_POSITION_STOP_TARGET' if existing_target_price is not None
-                               else 'STRUCTURAL_EVENT')
+                               else 'EVENT_IMPULSE_REFERENCE_ONLY' if game_changer
+                               else 'STRUCTURAL_EVENT',
+                fixed_take_profit_deferred=game_changer,
+                target_reference_only=game_changer)
 
 
 def prepare_row(row, price=None, now=None):
@@ -238,6 +247,9 @@ def prepare_row(row, price=None, now=None):
                         target_ladder=deepcopy(event['target_ladder']),
                         target_zones=deepcopy(event['target_zones']),
                         runner_target_price=event['runner_target_price'],
+                        fixed_take_profit_deferred=bool(event.get('game_changer_extreme')),
+                        target_reference_only=bool(event.get('game_changer_extreme')),
+                        event_impulse_exit_mode=('STRUCTURAL_EXHAUSTION_ONLY' if event.get('game_changer_extreme') else None),
                         take_profit_1=deepcopy(event['target_ladder'][0]),
                         take_profit_2=deepcopy(event['target_ladder'][1]) if len(event['target_ladder'])>1 else None)
     x['trade_plan'] = plan
