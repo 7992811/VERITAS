@@ -66,10 +66,14 @@ def context_summary(context):
     out['source_identity'] = _fields(_get(context, 'source_identity'),
                                     ('key', 'contract_id', 'asset'))
     event = _get(context, 'event')
-    out['event'] = _fields(event, ('version', 'event_type', 'event_id', 'asset',
+    out['event'] = _fields(event, ('version', 'event_type', 'event_id', 'proof_hash', 'asset',
         'direction', 'timeframe', 'structural_timeframe', 'signal_at',
         'confirmed_at', 'signal_price', 'trigger_level', 'stop_price',
-        'target_price', 'phase', 'spent', 'spent_reason'))
+        'target_price', 'runner_target_price', 'atr', 'stop_timeframe',
+        'atr_timeframe', 'phase', 'spent', 'spent_reason'))
+    out['quote'] = _fields(_get(context, 'quote'), (
+        'price', 'observed_at', 'market_observed_at', 'book_observed_at',
+        'best_bid', 'best_ask', 'spread_bps', 'source_gate_pass', 'market_open'))
     gate = _get(context, 'entry_gate')
     out['entry_gate'] = _fields(gate, ('eligible', 'reason', 'event_id',
         'timeframe', 'age_seconds', 'max_age_seconds'))
