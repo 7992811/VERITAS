@@ -137,6 +137,8 @@ def projected_add_floor(c, z, add_fill_price, add_units, add_fee_rub, *,
     out = {'version': VERSION, 'applied': False, 'eligible': True,
            'reason': 'CURRENT_POSITION_NOT_NET_PROTECTED',
            'current': None, 'projected': None}
+    if not is_protected(z or {}):
+        return out
     tid = (z or {}).get('active_trade_id')
     units = number((z or {}).get('units'))
     entry = number((z or {}).get('avg_entry_price'))
