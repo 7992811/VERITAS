@@ -35,7 +35,8 @@ def load_r80(name, namespace, *, legacy=False):
         and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
                 and c.func.id == delegate for c in ast.walk(n))))
     if legacy:
-        released = {'positions'} if name == 'step_all' else {'rows', 'prepared', 'z'}
+        released = ({'positions'} if name == 'step_all' else
+                    {'rows','prepared','z','q','identity','payload','guard','patch','candidate'})
         node.body = [n for n in node.body if not (
             isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
             and n.value.value is None and
