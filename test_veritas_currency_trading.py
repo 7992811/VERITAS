@@ -591,6 +591,7 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
 
     def test_acknowledged_expired_day_zero_fill_operations_proof_clears_reconciliation_without_resubmit(self):
         terms = self.entry()
+        terms["execution_environment"] = self.adapter.environment
         terms["time_in_force"] = "TIME_IN_FORCE_DAY"
         proposal = self.repo.create(
             terms, owner_user_id=OWNER, private_chat_id=OWNER, bot_id=BOT)
