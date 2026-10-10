@@ -3214,7 +3214,7 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z['learning_conclusion']=VTD.conclusion(diagnosis)
         z['trade_diagnostics']=diagnosis
         z['learning_eligible']=bool(diagnosis.get('learning_eligible'))
-        z['episode_key']=_v90j_episode_key(z,payload)
+        z['episode_key']=_v90j_episode_key(z,payload); VTR.attach_postmortem(z,dp,sp,diagnosis,payload)
         VLE.mark_trade(z,dict(r0))
         z['today_msk']=(_v90j_msk_date(cl)==datetime.now(timezone(timedelta(hours=3))).date())
         # The UI/learning layer uses flattened fields above. Do not retain duplicate
@@ -3341,7 +3341,7 @@ def trade_report(pg_connect,limit=2500):
         'learning_eligible_count':sum(1 for x in unique_all if x.get('learning_eligible')),
         'deduplicated_portfolio_records':max(0,len(rows)-len(unique_all)),
         'today_missing_fields':missing,
-        'today_recovery':recovery,
+        'today_recovery':recovery,**VTR.postmortem_report_fields(rows),
         'archive_window':min(5000,max(50,int(limit or 2500))),
         'display_policy':'today full detail; older portfolio results + unique learning episodes only',
         'learning_policy':'one canonical market episode once; portfolio duplicates aggregated before self-learning',
