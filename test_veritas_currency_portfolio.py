@@ -165,6 +165,9 @@ class CurrencyPortfolioTests(TestCase):
             'last_mark_price':'12.8','last_mark_observed_at':t,
             'excursion_entry_price':None,'excursion_direction':None,
             'mfe_price':None,'mae_price':None,'excursion_started_at':None,
+            'excursion_observation_count':0,'excursion_last_observed_at':None,
+            'excursion_max_gap_seconds':None,'protection_test_started_at':None,
+            'protection_qualified_at':None,
             'held_stop_price':None,'held_target_price':None,'held_horizon':None,
             'held_opened_at':None,
         }
@@ -185,7 +188,10 @@ class CurrencyPortfolioTests(TestCase):
              'currency_excursion_snapshot':{
                  'version':'CURRENCY_LIVE_EXCURSION_V1','direction':'LONG',
                  'entry_price':'12.700','mfe_price':'12.850','mae_price':'12.680',
-                 'mfe_pct':'1.1811023622','mae_pct':'0.1574803150'}},
+                 'mfe_pct':'1.1811023622','mae_pct':'0.1574803150',
+                 'observation_count':8,'max_gap_seconds':'15','horizon':'5m',
+                 'protection_test_started_at':(t+timedelta(minutes=5)).isoformat(),
+                 'protection_qualified_at':(t+timedelta(minutes=7)).isoformat()}},
         ]
         fees=[
             {'client_order_id':'order-open','cumulative_fee_rub':'2','filled_lots':1},
@@ -232,6 +238,10 @@ class CurrencyPortfolioTests(TestCase):
             last_mark_price='12.750',last_mark_observed_at=t+timedelta(minutes=5),
             excursion_entry_price='12.700',excursion_direction='LONG',
             mfe_price='12.780',mae_price='12.690',excursion_started_at=t,
+            excursion_observation_count=6,excursion_last_observed_at=t+timedelta(minutes=5),
+            excursion_max_gap_seconds='15',
+            protection_test_started_at=t+timedelta(minutes=1),
+            protection_qualified_at=t+timedelta(minutes=3),
             held_stop_price='12.650',held_target_price='12.800',
             held_horizon='5m',held_opened_at=t.isoformat())
         fills=[{'trade_id':'fill-open','client_order_id':'order-open','side':'BUY','lots':1,
