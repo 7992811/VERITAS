@@ -387,6 +387,7 @@ class TBankTradingAdapter:
         self.timeout = timeout
         self._accounts = {}
         self._accounts_at = None
+        self._broker_report_recovery_tasks = {}
         self._lock = threading.RLock()
 
     def __repr__(self):
@@ -702,6 +703,177 @@ class TBankTradingAdapter:
                 raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
         raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
 
+    def recover_submission_from_broker_report(
+            self, account_id, instrument_uid, client_order_id, broker_order_id,
+            side, lots, sent_at, *, ticker, lot_size, time_in_force,
+            limit_price=None, max_pages=100):
+        """Read-only terminal recovery from the official broker trade report.
+
+        The report is authoritative for trades and exposes the broker order_id.
+        FILL_AND_KILL is terminal immediately: after a complete report covering
+        the order time, exact order-id trades prove fills; no such trades proves
+        zero fill and immediate cancellation. Report generation is asynchronous,
+        so one task id is cached and polled by later reconciliation passes.
+        """
+        account = _identifier(account_id, "INVALID_ACCOUNT_ID")
+        uid = _uuid(instrument_uid, "INVALID_INSTRUMENT_UID")
+        client = _uuid(client_order_id)
+        broker = _identifier(broker_order_id, "INVALID_BROKER_ORDER_ID")
+        normalized_side = _side(side)
+        requested_lots = _integer(lots, minimum=1, code="INVALID_LOTS")
+        lot_size = _integer(lot_size, minimum=1, code="INVALID_LOT_SIZE")
+        if ticker != "CNYRUBF":
+            raise TradingError("EXACT_CNY_INSTRUMENT_REQUIRED")
+        normalized_tif = {
+            "FILL_AND_KILL": "TIME_IN_FORCE_FILL_AND_KILL",
+            "TIME_IN_FORCE_FILL_AND_KILL": "TIME_IN_FORCE_FILL_AND_KILL",
+        }.get(time_in_force)
+        if normalized_tif is None:
+            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN",
+                               code="BROKER_REPORT_RECOVERY_REQUIRES_FAK")
+        center = datetime.fromisoformat(_timestamp(
+            sent_at.isoformat() if isinstance(sent_at, datetime) else sent_at))
+        now = datetime.now(timezone.utc)
+        # Do not use absence from a report as evidence until the immediate FAK
+        # outcome has had ample time to reach reporting.
+        cutoff = now - timedelta(minutes=15)
+        if cutoff <= center:
+            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN",
+                               code="BROKER_REPORT_RECOVERY_WINDOW_NOT_READY")
+        start = center - timedelta(minutes=5)
+        end = min(center + timedelta(days=1), cutoff)
+        start_s, end_s = start.isoformat(), end.isoformat()
+        key = (account, uid, broker, start_s, end_s)
+
+        with self._lock:
+            state = self._broker_report_recovery_tasks.get(key)
+        if state is None:
+            generated = self._request("broker_report", {"generateBrokerReportRequest":{
+                "accountId":account, "from":start_s, "to":end_s}})
+            task = _identifier((generated.get("generateBrokerReportResponse") or {}).get("taskId"),
+                               "INVALID_REPORT_TASK_ID")
+            state = {"task_id":task, "created_at":time.monotonic(), "report":None}
+            with self._lock:
+                self._broker_report_recovery_tasks[key] = state
+            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN", code="BROKER_REPORT_GENERATING")
+
+        report = state.get("report")
+        if report is None:
+            task = state["task_id"]
+            items, count, pages = [], None, None
+            try:
+                for page in range(max_pages):
+                    raw = self._request("broker_report", {"getBrokerReportRequest":{
+                        "taskId":task, "page":page}})
+                    data = raw.get("getBrokerReportResponse")
+                    if not isinstance(data, dict) or data.get("taskId", task) != task:
+                        raise TradingError("BROKER_REPORT_IDENTITY_MISMATCH")
+                    n, p = data.get("itemsCount", 0), data.get("pagesCount", 0)
+                    current, batch = data.get("page", 0), data.get("brokerReport", [])
+                    if (type(n) is not int or type(p) is not int or type(current) is not int
+                            or n < 0 or p < 0 or current != page or not isinstance(batch, list)
+                            or any(not isinstance(x, dict) for x in batch)):
+                        raise TradingError("INVALID_BROKER_REPORT_RESPONSE")
+                    if count is not None and (n != count or p != pages):
+                        raise TradingError("BROKER_REPORT_CHANGED_DURING_PAGINATION")
+                    count, pages = n, p
+                    items.extend(copy.deepcopy(batch))
+                    if len(items) > count:
+                        raise TradingError("BROKER_REPORT_COUNT_MISMATCH")
+                    if len(items) == count:
+                        if (len({x.get("tradeId") for x in items}) != len(items)
+                                or any(not x.get("tradeId") for x in items)):
+                            raise TradingError("BROKER_REPORT_DUPLICATE_TRADE")
+                        report = {"retrieval_complete":True, "trades":items}
+                        with self._lock:
+                            self._broker_report_recovery_tasks[key]["report"] = report
+                        break
+                    if not batch or page + 1 >= max(1, pages):
+                        raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
+                if report is None:
+                    raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
+            except TradingError as exc:
+                # 30058 currently reaches the REST adapter as HTTP 400. Treat a
+                # fresh report task as pending, never as proof of zero fills.
+                if (exc.code in {"BROKER_HTTP_400", "BROKER_HTTP_408", "BROKER_HTTP_429",
+                                 "BROKER_HTTP_500", "BROKER_HTTP_503"}
+                        and time.monotonic() - state["created_at"] <= 600):
+                    return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                       "UNKNOWN", "UNKNOWN", code="BROKER_REPORT_NOT_READY")
+                return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                   "UNKNOWN", "UNKNOWN", code=exc.code)
+
+        exact = [row for row in report["trades"] if str(row.get("orderId", "")) == broker]
+        if not exact:
+            # Official FAK semantics guarantee immediate fill-or-cancel. A
+            # complete broker trade report covering the request with no row for
+            # its exact order_id therefore proves zero fill and cancellation.
+            return OrderResult(
+                client, broker, uid, normalized_side, requested_lots, 0,
+                "CANCELLED", "ACCEPTED",
+                broker_status="EXECUTION_REPORT_STATUS_CANCELLED",
+                executions=(), executed_commission=Decimal("0"),
+                commission_currency="RUB", code="BROKER_REPORT_PROVES_ZERO_FILL_FAK",
+                order_type="ORDER_TYPE_LIMIT",
+                limit_price=_price(limit_price) if limit_price is not None else None,
+                time_in_force=normalized_tif)
+
+        fills, total_lots, weighted = [], 0, Decimal("0")
+        commission, commission_currency = Decimal("0"), None
+        for row in exact:
+            if row.get("ticker") not in (None, "", ticker):
+                return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                   "UNKNOWN", "UNKNOWN",
+                                   code="BROKER_REPORT_INSTRUMENT_MISMATCH")
+            quantity = _integer(row.get("quantity"), minimum=1, code="INVALID_REPORT_QUANTITY")
+            if quantity % lot_size:
+                return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                   "UNKNOWN", "UNKNOWN",
+                                   code="BROKER_REPORT_LOT_SIZE_MISMATCH")
+            fill_lots = quantity // lot_size
+            price, currency = _money(row.get("price"))
+            if price is None or price <= 0:
+                return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                   "UNKNOWN", "UNKNOWN",
+                                   code="INVALID_BROKER_REPORT_PRICE")
+            trade_id = _identifier(row.get("tradeId"), "INVALID_REPORT_TRADE_ID")
+            executed_at = _timestamp(row.get("tradeDatetime"))
+            fills.append(ExecutionFill(trade_id, fill_lots, price, currency, executed_at, "POINT"))
+            total_lots += fill_lots
+            weighted += price * fill_lots
+            for field in ("brokerCommission", "exchangeCommission", "exchangeClearingCommission"):
+                amount, comm_currency = _money(row.get(field))
+                if amount is None:
+                    continue
+                if commission_currency is None:
+                    commission_currency = comm_currency
+                elif comm_currency != commission_currency:
+                    return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                       "UNKNOWN", "UNKNOWN",
+                                       code="BROKER_REPORT_COMMISSION_CURRENCY_MISMATCH")
+                commission += amount
+        if total_lots < 0 or total_lots > requested_lots:
+            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN",
+                               code="BROKER_REPORT_FILL_QUANTITY_MISMATCH")
+        status = "FILLED" if total_lots == requested_lots else "CANCELLED"
+        broker_status = ("EXECUTION_REPORT_STATUS_FILL" if status == "FILLED"
+                         else "EXECUTION_REPORT_STATUS_CANCELLED")
+        return OrderResult(
+            client, broker, uid, normalized_side, requested_lots, total_lots,
+            status, "ACCEPTED", broker_status=broker_status,
+            average_fill_price=weighted / total_lots if total_lots else None,
+            fill_price_currency=fills[0].currency if fills else None,
+            executions=tuple(fills), executed_commission=commission,
+            commission_currency=commission_currency or "RUB",
+            code="BROKER_REPORT_RECOVERED_TERMINAL_ORDER",
+            order_type="ORDER_TYPE_LIMIT",
+            limit_price=_price(limit_price) if limit_price is not None else None,
+            time_in_force=normalized_tif)
+
     def get_order_book(self, instrument_uid, depth=1):
         uid = _uuid(instrument_uid, "INVALID_INSTRUMENT_UID")
         if type(depth) is not int or depth not in (1, 10, 20, 30, 40, 50):
@@ -864,6 +1036,20 @@ class TBankTradingAdapter:
             raise TradingError("ORDER_LOOKUP_IDENTITY_MISMATCH")
         return result
 
+    def get_order_from_operation_id(self, account_id, operation_id):
+        """Read only recovery lookup using a current OperationsService operation id.
+
+        T-Bank documents that operation ids may change and recommends resolving
+        the current operation id with GetOrderState. An operation id is not
+        asserted to be an exchange order id, so orderIdType is deliberately
+        omitted (UNSPECIFIED). Identity is established by the returned
+        orderRequestId and immutable order terms in the coordinator.
+        """
+        account = _identifier(account_id, "INVALID_ACCOUNT_ID")
+        operation = _identifier(operation_id, "INVALID_OPERATION_ID")
+        body = {"accountId": account, "orderId": operation, "priceType": "PRICE_TYPE_POINT"}
+        return self._normalize_order(self._request("order", body), points=True)
+
     def get_order_executions(self, account_id, order_id=None, *, client_order_id=None):
         return self.get_order(account_id, order_id, client_order_id=client_order_id).executions
 
@@ -997,7 +1183,7 @@ class TBankTradingAdapter:
         matches, resolved_states, foreign_requests = {}, 0, 0
         for operation_id in candidates:
             try:
-                observed = self.get_order(account, operation_id)
+                observed = self.get_order_from_operation_id(account, operation_id)
             except TradingError as exc:
                 if exc.not_found:
                     continue

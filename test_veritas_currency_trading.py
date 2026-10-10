@@ -588,6 +588,49 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.assertEqual(self.ingested[-1][1].broker_order_id, original_broker_id)
         self.assertEqual(self.transport.count("PostOrder"), 1)
 
+    def test_acknowledged_fak_recovers_terminal_cancel_from_broker_report_without_resubmit(self):
+        approved = self.approve()
+        self.transport.handlers["PostOrder"] = lambda body: Response(
+            order(client=body["orderId"], timeInForce=body["timeInForce"]))
+        sent = self.coordinator.execute_approved(approved["proposal_id"])
+        self.assertTrue(sent["ok"], sent)
+        held = self.repo.get(approved["proposal_id"])
+        original_broker_id = held["broker_order_id"]
+        self.assertEqual(held["status"], "ACKNOWLEDGED")
+
+        unresolved = T.OrderResult(
+            approved["client_order_id"], None, UID, "BUY", 2, None,
+            "UNKNOWN", "UNKNOWN", code="ORDER_NOT_FOUND_UNRESOLVED")
+        history_unresolved = T.OrderResult(
+            approved["client_order_id"], None, UID, "BUY", 2, None,
+            "UNKNOWN", "UNKNOWN", code="HISTORICAL_OPERATION_STATES_NOT_FOUND")
+        report_cancel = T.OrderResult(
+            approved["client_order_id"], original_broker_id, UID, "BUY", 2, 0,
+            "CANCELLED", "ACCEPTED",
+            broker_status="EXECUTION_REPORT_STATUS_CANCELLED",
+            executions=(), executed_commission=D("0"), commission_currency="RUB",
+            code="BROKER_REPORT_PROVES_ZERO_FILL_FAK",
+            order_type="ORDER_TYPE_LIMIT", limit_price=D("12.345"),
+            time_in_force="TIME_IN_FORCE_FILL_AND_KILL")
+
+        with patch.object(self.adapter, "get_order",
+                          side_effect=T.TradingError("BROKER_NOT_FOUND", not_found=True)), \
+             patch.object(self.adapter, "reconcile_submission", return_value=unresolved), \
+             patch.object(self.adapter, "recover_submission_from_operations",
+                          return_value=history_unresolved), \
+             patch.object(self.adapter, "recover_submission_from_broker_report",
+                          return_value=report_cancel) as report:
+            result = self.coordinator.reconcile()
+
+        self.assertEqual(result[0]["code"], "CANCELLED")
+        self.assertEqual(result[0]["lookup"], "broker_report")
+        report.assert_called_once()
+        durable = self.repo.get(approved["proposal_id"])
+        self.assertEqual(durable["status"], "CANCELLED")
+        self.assertTrue(durable["execution_reconciled"])
+        self.assertEqual(durable["broker_order_id"], original_broker_id)
+        self.assertEqual(self.transport.count("PostOrder"), 1)
+
     def test_unknown_first_binding_requires_uuid_returned_by_broker_receipt(self):
         approved = self.approve()
         self.transport.handlers["PostOrder"] = TimeoutError("synthetic lost reply")

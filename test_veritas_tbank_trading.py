@@ -219,6 +219,32 @@ class AdapterTests(unittest.TestCase):
                     self.assertIs(call["body"][flag], False)
                 self.assertFalse(adapter.capabilities()["execution_enabled"])
 
+    def test_broker_report_recovery_accepts_legacy_fak_alias(self):
+        result = self.adapter.recover_submission_from_broker_report(
+            ACCOUNT, UID, CLIENT, "broker-order-legacy-fak", "BUY", 2,
+            datetime.now(timezone.utc), ticker="CNYRUBF", lot_size=1,
+            time_in_force="FILL_AND_KILL", limit_price=D("12.345"))
+        self.assertEqual(result.status, "UNKNOWN")
+        self.assertEqual(result.code, "BROKER_REPORT_RECOVERY_WINDOW_NOT_READY")
+        self.assertEqual(self.transport.count("PostOrder"), 0)
+        self.assertEqual(self.transport.count("GetBrokerReport"), 0)
+
+    def test_operation_id_order_state_lookup_does_not_claim_exchange_id_type(self):
+        operation_id = "current-operation-order-1"
+        self.transport.states[operation_id] = order(
+            client=CLIENT, status="FILLED", filled=2, orderId="current-exchange-order-2",
+            stages=[stage("operation-lookup-trade-1", 2, "12.345")],
+            executedCommission=money("0.80"),
+        )
+        result = self.adapter.get_order_from_operation_id(ACCOUNT, operation_id)
+        self.assertEqual(result.client_order_id, CLIENT)
+        self.assertEqual(result.status, "FILLED")
+        call = [x for x in self.transport.calls if x["name"] == "GetOrderState"][-1]
+        self.assertEqual(call["body"]["orderId"], operation_id)
+        self.assertEqual(call["body"]["priceType"], "PRICE_TYPE_POINT")
+        self.assertNotIn("orderIdType", call["body"])
+        self.assertEqual(self.transport.count("PostOrder"), 0)
+
     def test_historical_order_recovery_uses_operations_id_and_exact_request_uuid(self):
         sent = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
         operation_id = "current-operation-order-1"
