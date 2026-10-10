@@ -703,6 +703,120 @@ class TBankTradingAdapter:
                 raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
         raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
 
+    def recover_expired_day_zero_fill_from_operations(
+            self, account_id, instrument_uid, client_order_id, broker_order_id,
+            side, lots, sent_at, *, lot_size, limit_price=None,
+            max_pages=100, page_size=1000):
+        """Read-only zero-fill proof for an expired DAY order.
+
+        This path is deliberately one-sided: it may prove zero fill, but it
+        never attributes a positive fill to an order from operations alone
+        because operations do not expose the original order request id.
+        """
+        account = _identifier(account_id, "INVALID_ACCOUNT_ID")
+        uid = _uuid(instrument_uid, "INVALID_INSTRUMENT_UID")
+        client = _uuid(client_order_id)
+        broker = _identifier(broker_order_id, "INVALID_BROKER_ORDER_ID")
+        normalized_side = _side(side)
+        requested_lots = _integer(lots, minimum=1, code="INVALID_LOTS")
+        lot_size = _integer(lot_size, minimum=1, code="INVALID_LOT_SIZE")
+        if type(max_pages) is not int or not 1 <= max_pages <= 100:
+            raise TradingError("INVALID_DAY_RECOVERY_PAGE_LIMIT")
+        if type(page_size) is not int or not 3 <= page_size <= 1000:
+            raise TradingError("INVALID_DAY_RECOVERY_PAGE_SIZE")
+
+        center = datetime.fromisoformat(_timestamp(
+            sent_at.isoformat() if isinstance(sent_at, datetime) else sent_at))
+        terminal_after = center + timedelta(days=1)
+        now = datetime.now(timezone.utc)
+        if now < terminal_after + timedelta(minutes=15):
+            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN", code="DAY_ORDER_NOT_OLD_ENOUGH_FOR_OPERATION_PROOF")
+
+        try:
+            active = self.list_orders(account)
+        except TradingError as exc:
+            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN", code=exc.code)
+        if any((row.broker_order_id == broker or row.client_order_id == client) for row in active):
+            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN", code="DAY_ORDER_STILL_ACTIVE")
+
+        cursor, seen = "", set()
+        matching_trade_operations = 0
+        pending_matching_operations = 0
+        start = center - timedelta(minutes=1)
+        end = terminal_after + timedelta(minutes=15)
+        expected_types = ({"OPERATION_TYPE_BUY", "OPERATION_TYPE_BUY_MARGIN"}
+                          if normalized_side == "BUY"
+                          else {"OPERATION_TYPE_SELL", "OPERATION_TYPE_SELL_MARGIN"})
+        for _ in range(max_pages):
+            page = self.get_operations_by_cursor(
+                account, from_time=start, to_time=end, cursor=cursor, limit=page_size)
+            items = page.get("items", [])
+            for item in items:
+                if item.get("instrumentUid") != uid:
+                    continue
+                op_type = item.get("operationType") or item.get("operation_type")
+                if op_type not in expected_types:
+                    continue
+                state = item.get("state")
+                occurred_raw = item.get("date")
+                try:
+                    occurred = datetime.fromisoformat(_timestamp(occurred_raw))
+                except TradingError:
+                    return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                       "UNKNOWN", "UNKNOWN", code="DAY_OPERATION_TIMESTAMP_INVALID")
+                if occurred < center or occurred > end:
+                    continue
+                if state == "OPERATION_STATE_PROGRESS":
+                    pending_matching_operations += 1
+                    continue
+                if state != "OPERATION_STATE_EXECUTED":
+                    continue
+                # Any executed BUY/SELL operation in the order's lifetime is
+                # execution evidence we cannot safely attribute to this exact
+                # order. Positive fill attribution therefore remains fail-closed.
+                trades_info = item.get("tradesInfo") or item.get("trades_info") or {}
+                trades = trades_info.get("trades", []) if isinstance(trades_info, dict) else []
+                direct_trades = item.get("trades", [])
+                if trades or direct_trades or item.get("quantityDone") or item.get("quantity_done"):
+                    matching_trade_operations += 1
+                else:
+                    # An executed trade-type operation without trade detail is
+                    # still positive execution evidence, never proof of zero.
+                    matching_trade_operations += 1
+            if not page.get("hasNext", False):
+                break
+            following = page.get("nextCursor")
+            if (not isinstance(following, str) or not following or following == cursor
+                    or following in seen):
+                return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                   "UNKNOWN", "UNKNOWN", code="DAY_OPERATIONS_CURSOR_STALLED")
+            seen.add(following)
+            cursor = following
+        else:
+            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN", code="DAY_OPERATIONS_PAGE_LIMIT")
+
+        if pending_matching_operations:
+            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN", code="DAY_OPERATION_STILL_PROGRESS")
+        if matching_trade_operations:
+            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN", code="DAY_EXECUTION_EVIDENCE_PRESENT")
+
+        return OrderResult(
+            client, broker, uid, normalized_side, requested_lots, 0,
+            "CANCELLED", "ACCEPTED",
+            broker_status="EXECUTION_REPORT_STATUS_CANCELLED",
+            executions=(), executed_commission=Decimal("0"),
+            commission_currency="RUB",
+            code="OPERATIONS_PROVE_ZERO_FILL_EXPIRED_DAY",
+            order_type="ORDER_TYPE_LIMIT",
+            limit_price=_price(limit_price) if limit_price is not None else None,
+            time_in_force="TIME_IN_FORCE_DAY")
+
     def recover_submission_from_broker_report(
             self, account_id, instrument_uid, client_order_id, broker_order_id,
             side, lots, sent_at, *, ticker, lot_size, time_in_force,
