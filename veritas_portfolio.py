@@ -2752,103 +2752,13 @@ _v90j_base_step_one = _step_one
 _v90j_cache={'at':0.0,'value':None}
 
 
-def _v90j_json(x):
-    if isinstance(x,dict):
-        return dict(x)
-    if not x:
-        return {}
-    try:
-        return json.loads(x)
-    except Exception:
-        return {}
-
-
-def _v90j_float(x,default=None):
-    try:
-        if x is None:
-            return default
-        v=float(x)
-        return v if math.isfinite(v) else default
-    except Exception:
-        return default
-
-
-def _v90j_iso(x):
-    if x is None:
-        return None
-    return x.isoformat() if hasattr(x,'isoformat') else str(x)
-
-
-def _v90j_msk_date(x):
-    if x is None:
-        return None
-    try:
-        if isinstance(x,str):
-            x=datetime.fromisoformat(x.replace('Z','+00:00'))
-        if x.tzinfo is None:
-            x=x.replace(tzinfo=timezone.utc)
-        return x.astimezone(timezone(timedelta(hours=3))).date()
-    except Exception:
-        return None
-
-
-def _v90j_episode_key(z,payload):
-    key=(payload.get('canonical_setup_id') or payload.get('setup_id')
-         or payload.get('canonical_trade_id'))
-    if key:
-        return str(key)
-    opened=z.get('opened_at')
-    try:
-        if isinstance(opened,str):
-            opened=datetime.fromisoformat(opened.replace('Z','+00:00'))
-        if opened and opened.tzinfo is None:
-            opened=opened.replace(tzinfo=timezone.utc)
-        bucket=opened.astimezone(timezone.utc).replace(second=0,microsecond=0).isoformat() if opened else 'UNKNOWN'
-    except Exception:
-        bucket=str(opened or 'UNKNOWN')[:16]
-    return '|'.join(str(v or '—') for v in
-                    (z.get('asset'),z.get('direction'),z.get('horizon'),z.get('setup'),bucket))
-
-
-def _v90j_learning_label(net,price_return,mfe,mae,giveback,exit_reason,recovered=False):
-    # This compatibility helper has no immutable rule/path proof. It can name
-    # the financial outcome, but cannot certify good execution or a wrong stop.
-    if recovered:
-        return 'RECOVERED_HISTORICAL_NO_LEARNING'
-    net=_v90j_float(net)
-    if net is None:
-        return 'UNVERIFIED_TRADE_EVIDENCE'
-    return ('PROFIT_OBSERVED_RULES_UNVERIFIED' if net>0 else
-            'LOSS_OBSERVED_RULES_UNVERIFIED' if net<0 else 'FLAT_OBSERVED_RULES_UNVERIFIED')
-
-
-def _v90j_learning_conclusion(label,z):
-    if label in ('UNVERIFIED_TRADE_EVIDENCE','PROFIT_OBSERVED_RULES_UNVERIFIED',
-                 'LOSS_OBSERVED_RULES_UNVERIFIED','FLAT_OBSERVED_RULES_UNVERIFIED'):
-        return VTD.conclusion({'status':'UNVERIFIED'})
-    if label in ('VALID_STRUCTURAL_STOP_LOSS','VALID_LOSING_TRADE','VALID_PROFITABLE_TRADE','VALID_FLAT_TRADE'):
-        return VTD.conclusion({'status':'VERIFIED_RULE_OUTCOME',
-                              'outcome':'LOSS' if label in ('VALID_STRUCTURAL_STOP_LOSS','VALID_LOSING_TRADE') else 'PROFIT'})
-    if label in ('PROVEN_ENTRY_RULE_VIOLATION','PROVEN_STOP_OR_ATR_RULE_VIOLATION'):
-        return VTD.conclusion({'status':'RULE_VIOLATION'})
-    mfe=z.get('mfe_pct'); mae=z.get('mae_pct'); give=z.get('giveback_pct')
-    setup=str(z.get('setup') or 'setup'); regime=str(z.get('regime') or 'regime')
-    if label=='RIGHT_DIRECTION_HIGH_CAPTURE':
-        return f'{setup} / {regime}: прибыльное исполнение с высокой реализацией благоприятного хода; сохранять логику сопровождения.'
-    if label=='RIGHT_DIRECTION_LOW_CAPTURE':
-        return f'{setup} / {regime}: направление монетизировано, но захват MFE низкий; проверять TP/trailing и преждевременное сокращение.'
-    if label=='RIGHT_DIRECTION_STOP_ERROR':
-        return f'{setup} / {regime}: до стопа был благоприятный ход; проверять ширину/структуру стопа, не штрафовать направление автоматически.'
-    if label=='FAVORABLE_PATH_NOT_MONETIZED':
-        return f'{setup} / {regime}: рынок давал благоприятный ход, но Net не стал положительным; изучать выход и giveback отдельно от направления.'
-    if label=='RIGHT_DIRECTION_PREMATURE_EXIT':
-        return f'{setup} / {regime}: выход/сокращение произошло до полной реализации движения; проверять подтверждение разворота и удержание позиции.'
-    if label=='DIRECTION_OR_ENTRY_FAILED_ON_OBSERVED_PATH':
-        return f'{setup} / {regime}: устойчивого благоприятного хода до закрытия не было; проверять направление, момент входа и режим.'
-    if label=='RECOVERED_HISTORICAL_NO_LEARNING':
-        return 'Историческая запись восстановлена частично; результат хранится, но неполная телеметрия не усиливает правила модели.'
-    return f'{setup} / {regime}: смешанный результат; использовать только как слабое execution-evidence до накопления выборки.'
-
+_v90j_json=VTR.json_object
+_v90j_float=VTR.finite_number
+_v90j_iso=VTR.iso_value
+_v90j_msk_date=VTR.msk_date
+_v90j_episode_key=VTR.episode_key
+_v90j_learning_label=VTR.learning_label
+_v90j_learning_conclusion=VTR.learning_conclusion
 
 def _v90j_entry_patch(row,z,ts):
     row=row or {}; plan=row.get('trade_plan') or {}; inst=row.get('institutional_signal') or {}
