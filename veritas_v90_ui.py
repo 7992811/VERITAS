@@ -1407,6 +1407,7 @@ const reviewKindLabel=v=>({
   SUSTAINED_PROFIT_PROTECTION_REPLAY:'Защита устойчивой прибыли',
   EPISODE_ADD_PROFIT_FLOOR:'Добор после заработанной прибыли',
   COST_DRAG_REVIEW:'Издержки и частичные выходы',
+  PROFIT_CAPTURE_REPLAY:'Захват крупного движения',
   STOP_VOLATILITY_REVIEW:'Стоп и волатильность'
 }[String(v||'')]||String(v||'').replaceAll('_',' '));
 const reviewCandidateStatus=v=>({
@@ -1472,7 +1473,7 @@ function reviewTradeModel(t){
   return {t,p,post,net,mfe,mae,capture,attr,action,replayProven,counterfactualPnl,counterfactualReturn,counterfactualExit,missedProfit,signalEntry,addPrice,protectionTrigger,status,statusClass,lesson};
 }
 function reviewPostmortemHtml(x){
-  const r=x.post||{},lv=r.levels_volatility||{},mc=r.market_context||{},ex=r.execution||{};
+  const r=x.post||{},lv=r.levels_volatility||{},mc=r.market_context||{},ex=r.execution||{},costs=r.costs||{},path=r.path||{};
   if(!r.version)return'';
   const fmt=v=>knownNumber(v)==null?'—':n(v,2);
   const protectedLabel=lv.protected_level_kind==='previous_low'?'предыдущий low':lv.protected_level_kind==='previous_high'?'предыдущий high':'защищаемый уровень';
@@ -1500,7 +1501,9 @@ function reviewPostmortemHtml(x){
     '<div class="review-metric"><span>Цель</span><b>'+fmt(lv.target_distance_atr)+' ATR</b></div>'+
     '<div class="review-metric"><span>Цель / риск</span><b>'+fmt(lv.gross_target_to_risk)+'×</b></div>'+
     '<div class="review-metric"><span>Входных fill</span><b>'+esc(ex.entry_fill_count??'—')+'</b></div>'+
-    '<div class="review-metric"><span>TP-fill</span><b>'+esc(ex.take_profit_fill_count??'—')+'</b></div></div>'+
+    '<div class="review-metric"><span>TP-fill</span><b>'+esc(ex.take_profit_fill_count??'—')+'</b></div>'+
+    '<div class="review-metric"><span>Расходы / gross</span><b>'+(knownNumber(costs.cost_share_of_gross)==null?'—':n(100*Number(costs.cost_share_of_gross),0)+'%')+'</b></div>'+
+    '<div class="review-metric"><span>Отдано MFE</span><b>'+(knownNumber(path.giveback_to_mfe_ratio)==null?'—':n(100*Number(path.giveback_to_mfe_ratio),0)+'%')+'</b></div></div>'+
     '<div class="review-item-sub">'+esc(tf||'таймфреймы не восстановлены')+'</div>'+
     '<div class="review-item-sub"><b>Цели:</b> '+esc(ladderText)+'</div>'+
     '<div class="review-item-sub"><b>Логика входа:</b> '+esc(logic||'—')+'</div>'+

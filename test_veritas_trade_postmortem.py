@@ -136,6 +136,31 @@ class TradePostmortemTests(unittest.TestCase):
         self.assertIn("INITIAL_STOP_OUTSIDE_RECORDED_RULE", review["violations"])
         self.assertIn("PROVEN_RULE_REPAIR", {p["kind"] for p in review["proposals"]})
 
+    def test_large_profitable_move_with_half_mfe_given_back_requests_capture_replay(self):
+        trade = self.base_trade(
+            net_pnl_rub=1200.0, gross_pnl_rub=1500.0, fees_rub=300.0,
+            mfe_pct=5.0, mae_pct=-0.8, giveback_pct=3.0,
+            avg_exit_price=102.0,
+        )
+        snap = POST.entry_snapshot(trade, self.decision(), {}, self.diagnosis(),
+                                   raw_payload=self.raw_payload())
+        review = POST.review(trade, self.diagnosis(), snap, raw_payload=self.raw_payload())
+        self.assertTrue(review["path"]["low_capture_large_move"])
+        self.assertAlmostEqual(review["path"]["giveback_to_mfe_ratio"], 0.6)
+        self.assertIn("PROFIT_CAPTURE_REPLAY", {p["kind"] for p in review["proposals"]})
+
+    def test_positive_trade_with_more_than_half_gross_consumed_by_costs_requests_cost_review(self):
+        trade = self.base_trade(
+            net_pnl_rub=40.0, gross_pnl_rub=200.0, fees_rub=120.0,
+            funding_rub=40.0, mfe_pct=0.30, giveback_pct=0.05,
+        )
+        snap = POST.entry_snapshot(trade, self.decision(), {}, self.diagnosis(),
+                                   raw_payload=self.raw_payload())
+        review = POST.review(trade, self.diagnosis(), snap, raw_payload=self.raw_payload())
+        self.assertTrue(review["costs"]["material_cost_drag"])
+        self.assertAlmostEqual(review["costs"]["cost_share_of_gross"], 0.8)
+        self.assertIn("COST_DRAG_REVIEW", {p["kind"] for p in review["proposals"]})
+
     def test_positive_gross_negative_net_flags_cost_drag_without_rewriting_financials(self):
         trade = self.base_trade(gross_pnl_rub=50.0, net_pnl_rub=-10.0, mfe_pct=0.4)
         before = dict(trade)

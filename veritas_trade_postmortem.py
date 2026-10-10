@@ -192,6 +192,10 @@ def review(trade, diagnosis=None, snapshot=None, raw_payload=None):
     snap = dict(snapshot or {})
     net = _num(t.get("net_pnl_rub"))
     gross = _num(t.get("gross_pnl_rub"))
+    fees = _num(t.get("fees_rub")) or 0.0
+    funding = _num(t.get("funding_rub")) or 0.0
+    total_costs = max(0.0, fees) + max(0.0, funding)
+    cost_share_of_gross = (total_costs / gross if gross is not None and gross > 1e-12 else None)
     mfe = _num(t.get("mfe_pct"))
     mae = _num(t.get("mae_pct"))
     giveback = _num(t.get("giveback_pct"))
@@ -289,14 +293,47 @@ def review(trade, diagnosis=None, snapshot=None, raw_payload=None):
             blockers=("SHADOW_AND_OOS_REQUIRED",),
         ))
 
-    if gross is not None and gross > 0 and net is not None and net <= 0:
-        issues.append("Валовая прибыль была положительной, но расходы перевели итог в минус.")
+    cost_drag_material = bool(
+        gross is not None and gross > 0 and net is not None
+        and (net <= 0 or (cost_share_of_gross is not None and cost_share_of_gross >= 0.50))
+    )
+    if cost_drag_material:
+        if net <= 0:
+            issues.append("Валовая прибыль была положительной, но расходы перевели итог в минус.")
+        else:
+            issues.append(f"Расходы поглотили {100.0*cost_share_of_gross:.1f}% валовой прибыли.")
         proposals.append(_proposal(
             t.get("trade_id"), "COST_DRAG_REVIEW",
             "Проверить экономику частичных выходов и доборов",
             "Сократить churn только если replay показывает улучшение net-результата после всех комиссий и проскальзывания.",
             conflicts=("Не отменять структурно необходимые выходы ради экономии комиссии.",),
             tests=({"test": "FILL_LEDGER_COST_ATTRIBUTION"},),
+        ))
+
+    capture_giveback_ratio = (
+        giveback / mfe if mfe is not None and mfe > 1e-12 and giveback is not None else None
+    )
+    low_capture_large_move = bool(
+        net is not None and net > 0 and mfe is not None and mfe >= 0.50
+        and capture_giveback_ratio is not None and capture_giveback_ratio >= 0.50
+    )
+    if low_capture_large_move:
+        issues.append(
+            f"Сделка сохранила прибыль, но отдала {100.0*capture_giveback_ratio:.1f}% наблюдённого MFE до финального выхода."
+        )
+        proposals.append(_proposal(
+            t.get("trade_id"), "PROFIT_CAPTURE_REPLAY",
+            "Проверить более эффективный захват крупного движения",
+            "Сравнить текущий защитный стоп, частичные TP и structural runner на ordered-path replay. Цель — увеличить net capture без роста ложных ранних выходов.",
+            conflicts=(
+                "Не превращать краткий ценовой всплеск в обязательную фиксацию.",
+                "Не ухудшать уже действующий net-positive floor после расходов.",
+            ),
+            tests=(
+                {"test": "ORDERED_PATH_TRAILING_CAPTURE_REPLAY"},
+                {"test": "FUTURE_OOS_CAPTURE_VS_FALSE_EXIT_RATE"},
+            ),
+            blockers=("ORDERED_PATH_REPLAY_AND_OOS_REQUIRED",),
         ))
 
     risk_atr = _num(snap.get("initial_risk_atr"))
@@ -341,11 +378,20 @@ def review(trade, diagnosis=None, snapshot=None, raw_payload=None):
         "material_mfe_threshold_pct": threshold,
         "financial_result_rub": net,
         "gross_result_rub": gross,
+        "costs": {
+            "fees_rub": fees,
+            "funding_rub": funding,
+            "total_costs_rub": total_costs,
+            "cost_share_of_gross": cost_share_of_gross,
+            "material_cost_drag": cost_drag_material,
+        },
         "path": {
             "mfe_pct": mfe,
             "mae_pct": mae,
             "giveback_pct": giveback,
             "material_profit_giveback": material_giveback,
+            "giveback_to_mfe_ratio": capture_giveback_ratio,
+            "low_capture_large_move": low_capture_large_move,
         },
         "execution": {
             "entry_fill_count": entry_fills,
