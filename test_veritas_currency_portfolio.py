@@ -22,7 +22,8 @@ class CurrencyPortfolioTests(TestCase):
         self.assertEqual(pol['hard_drawdown'],0.35)
         self.assertTrue(pol['weekend_carry_allowed'])
         self.assertTrue(pol['paper_trading_enabled'])
-        self.assertFalse(pol['live_trading_enabled'])
+        self.assertTrue(pol['live_trading_capable'])
+        self.assertTrue(pol['live_trading_enabled'])
         self.assertEqual(pol['initial_normal'],.50)
         self.assertEqual(pol['initial_super'],1.00)
         self.assertEqual(pol['probe_normal'],.05)
@@ -84,7 +85,8 @@ class CurrencyPortfolioTests(TestCase):
         self.assertFalse(out['positions_complete'])
         self.assertEqual(cur['configuration_status'],'CONFIGURED')
         self.assertEqual(cur['max_gross_limit'],10.0)
-        self.assertFalse(cur['live_trading_enabled'])
+        self.assertTrue(cur['live_trading_capable'])
+        self.assertTrue(cur['live_trading_enabled'])
 
     def test_reporting_filters_currency_trace_and_positions_to_cny_only(self):
         original={'portfolios':[{'name':'Currency','nav_rub':10_000.0,
