@@ -494,9 +494,9 @@ class CurrencyTradingCoordinator:
                     continue
                 try:
                     if proposal.get("broker_order_id"):
+                        lookup = "broker_order_id"
                         try:
                             result = self.adapter.get_order(self.account_id, proposal["broker_order_id"])
-                            lookup = "broker_order_id"
                             if (row_status == "ACKNOWLEDGED"
                                     and result.status == "UNKNOWN"
                                     and getattr(result, "code", None) in {"BROKER_HTTP_400", "INVALID_BROKER_JSON"}):
@@ -511,11 +511,12 @@ class CurrencyTradingCoordinator:
                             )
                             if getattr(exc, "not_found", False) is not True and not stale_exchange_id:
                                 raise
+                            lookup = "client_order_id_fallback"
                             result = self.adapter.reconcile_submission(
                                 self.account_id, proposal["client_order_id"])
-                            lookup = "client_order_id_fallback"
                             if (result.status == "UNKNOWN"
                                     and getattr(result, "code", None) == "ORDER_NOT_FOUND_UNRESOLVED"):
+                                lookup = "operations_history"
                                 recovered = self.adapter.recover_submission_from_operations(
                                     self.account_id, terms.get("instrument_uid"),
                                     proposal["client_order_id"], terms.get("side"),
@@ -533,6 +534,7 @@ class CurrencyTradingCoordinator:
                                     lookup = "operations_history_request_uuid"
                                 else:
                                     spec = terms.get("contract_spec") or {}
+                                    lookup = "broker_report"
                                     report_recovery = self.adapter.recover_submission_from_broker_report(
                                         self.account_id, terms.get("instrument_uid"),
                                         proposal["client_order_id"], proposal["broker_order_id"],
@@ -592,6 +594,8 @@ class CurrencyTradingCoordinator:
                                     "code": "EXECUTION_RECONCILIATION_PENDING",
                                     "detail_code": detail,
                                     "row_status": row_status,
-                                    "lookup": "broker_order_id" if proposal.get("broker_order_id") else "client_order_id",
+                                    "lookup": lookup if isinstance(locals().get("lookup"), str) else
+                                              ("broker_order_id" if proposal.get("broker_order_id") else "client_order_id"),
+                                    "stored_time_in_force": terms.get("time_in_force"),
                                     "broker_order_bound": bool(proposal.get("broker_order_id"))})
         return results
