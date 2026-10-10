@@ -7,6 +7,9 @@ import veritas_currency_portfolio as C
 import veritas_currency_dashboard as CD
 import veritas_portfolio as P
 import veritas_portfolio_runtime as R
+import veritas_canonical_runtime as VCR
+import veritas_canonical_constitution as CTC
+from test_veritas_timeframe_policy import structural_row
 
 
 class CurrencyPortfolioTests(TestCase):
@@ -68,6 +71,47 @@ class CurrencyPortfolioTests(TestCase):
         ]
         row=R.VCR.currency_candidate_book(rows)['CNYRUBF']
         self.assertTrue(row['_currency_mtf_conflict'])
+
+    def _currency_structural(self, probability, independent=2):
+        now=datetime.now(timezone.utc).replace(microsecond=0)
+        row=structural_row(now, asset='CNYRUBF', price=12.345, width=.26)
+        row['calibrated_probability']=probability
+        row['independent_evidence_families']=independent
+        return row,now
+
+    def test_currency_normal_entry_requires_62pct_and_two_independent_confirmations(self):
+        row,now=self._currency_structural(.619,2)
+        blocked=VCR.evaluate(row,CTC.runtime_portfolio_policy('Currency'),0.,now)
+        self.assertFalse(blocked['open'])
+        self.assertEqual(blocked['reason'],'CURRENCY_PROBABILITY_BELOW_THRESHOLD')
+        row['calibrated_probability']=.62
+        row['independent_evidence_families']=1
+        blocked=VCR.evaluate(row,CTC.runtime_portfolio_policy('Currency'),0.,now)
+        self.assertFalse(blocked['open'])
+        self.assertEqual(blocked['reason'],'CURRENCY_INDEPENDENT_EVIDENCE_REQUIRED')
+        row['independent_evidence_families']=2
+        admitted=VCR.evaluate(row,CTC.runtime_portfolio_policy('Currency'),0.,now)
+        self.assertTrue(admitted['open'],admitted)
+        self.assertEqual(admitted['role_gate']['entry_mode'],'NORMAL')
+        self.assertEqual(admitted['role_gate']['strength'],'NORMAL')
+
+    def test_currency_strong_threshold_uses_super_initial_size(self):
+        normal,now=self._currency_structural(.62,2)
+        strong,_=self._currency_structural(.74,2)
+        a=VCR.evaluate(normal,CTC.runtime_portfolio_policy('Currency'),0.,now)
+        b=VCR.evaluate(strong,CTC.runtime_portfolio_policy('Currency'),0.,now)
+        self.assertTrue(a['open'],a); self.assertTrue(b['open'],b)
+        self.assertEqual(b['role_gate']['strength'],'STRONG')
+        self.assertGreaterEqual(b['fraction'],a['fraction'])
+
+    def test_currency_game_changer_bypasses_probability_only_after_structural_assessor(self):
+        row,now=self._currency_structural(.10,2)
+        with patch.object(VCR.VTDE,'event_impulse_assess',
+                          return_value={'eligible':True,'immediate_max':True,'phase':'GAME_CHANGER_EXTREME'}):
+            admitted=VCR.evaluate(row,CTC.runtime_portfolio_policy('Currency'),0.,now)
+        self.assertTrue(admitted['open'],admitted)
+        self.assertEqual(admitted['role_gate']['entry_mode'],'GAME_CHANGER')
+        self.assertTrue(admitted['role_gate']['probability_bypass'])
 
     def test_currency_drawdown_profile_matches_owner_limit(self):
         p=P._v90r35_profile('CURRENCY','Currency')
