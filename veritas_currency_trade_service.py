@@ -648,6 +648,7 @@ class TradeHttpApplication:
         self._reconcile_state_lock = threading.Lock()
         self._reconcile_inflight = False
         self._reconcile_last_error = None
+        self._reconcile_last_results = []
         # Status is a cached observation, never an implicit poll/execute call.
         self._poll_state = {
             "binding_state": "unchecked", "last_poll_at": None,
@@ -697,14 +698,16 @@ class TradeHttpApplication:
             self._reconcile_inflight = True
         def run():
             error = None
+            results = []
             try:
                 with self._lock:
-                    self.coordinator.reconcile()
+                    results = self.coordinator.reconcile()
             except Exception as exc:
                 error = _diagnostic(exc, "BROKER_RECONCILIATION_FAILED")
             finally:
                 with self._reconcile_state_lock:
                     self._reconcile_last_error = error
+                    self._reconcile_last_results = json_safe(results[-10:])
                     self._reconcile_inflight = False
         threading.Thread(target=run, daemon=True,
                          name="veritas-currency-reconcile").start()
@@ -947,9 +950,11 @@ class TradeHttpApplication:
         with self._reconcile_state_lock:
             reconcile_inflight = self._reconcile_inflight
             reconcile_error = self._reconcile_last_error
+            reconcile_results = deepcopy(self._reconcile_last_results)
         return {"ok": True, "enabled": True, "items": items,
                 "reconciliation_inflight": reconcile_inflight,
                 "reconciliation_error": reconcile_error,
+                "reconciliation_results": reconcile_results,
                 "execution_enabled": self.execution_enabled,
                 "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
                 "robot_autotrade_enabled": self.robot_autotrade_enabled,
