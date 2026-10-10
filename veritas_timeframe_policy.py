@@ -59,6 +59,18 @@ def structural_quote_rule(row):
     return SB.applies(context_of(row))
 
 
+def structural_event_direction(row):
+    """A sealed quote event may supply direction while the slow model is NO_TRADE."""
+    context=context_of(row)
+    event=context.get('event') or {}
+    if not SB.applies(context):
+        return None
+    if not SB.validate_event(event,context.get('source_identity')).get('eligible'):
+        return None
+    direction=str(event.get('direction') or '')
+    return direction if direction in ('LONG','SHORT') else None
+
+
 def event_gate(context, price, direction, now):
     """Keep the old close-confirmed teaching and the new quote teaching distinct."""
     if SB.applies(context):
