@@ -589,14 +589,11 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.assertEqual(self.transport.count("PostOrder"), 1)
 
     def test_acknowledged_expired_day_zero_fill_operations_proof_clears_reconciliation_without_resubmit(self):
-        approved = self.approve()
-        terms = dict(approved["terms"])
+        terms = self.entry()
         terms["time_in_force"] = "TIME_IN_FORCE_DAY"
-        # Keep the durable proposal coherent with the historical DAY order.
-        with self.repo.connect() as conn:
-            conn.execute("UPDATE trade_approvals SET terms_json = ? WHERE proposal_id = ?",
-                         (A._json(terms), approved["proposal_id"]))
-        approved = self.repo.get(approved["proposal_id"])
+        proposal = self.repo.create(
+            terms, owner_user_id=OWNER, private_chat_id=OWNER, bot_id=BOT)
+        approved = self.approve(proposal)
         self.transport.handlers["PostOrder"] = lambda body: Response(
             order(client=body["orderId"], timeInForce="TIME_IN_FORCE_DAY"))
         sent = self.coordinator.execute_approved(approved["proposal_id"])
