@@ -270,22 +270,41 @@ def ensure_schema(c):
 
 def sync(c,snapshot,decision_rows,trade_rows,now=None):
     clock=now or datetime.now(timezone.utc)
-    if clock.tzinfo is None: raise ValueError("timezone-aware clock required")
+    if clock.tzinfo is None:
+        raise ValueError("timezone-aware clock required")
     hypotheses=list(snapshot.get("hypotheses") or [])[:L2.MAX_HYPOTHESES]
     cutoff=max((r.get("decision_id") for r in decision_rows if type(r.get("decision_id")) is int),default=0)
+
+    registrations=[]
     for h in hypotheses:
         identity={k:h.get(k) for k in ("version","kind","scope","proposal")}
         if h.get("hypothesis_id")!=L2._digest(identity):
             raise ValueError("learning v2 hypothesis identity mismatch")
         scope=h.get("scope") or {}
-        c.execute("""INSERT INTO learning_v2_registry(
-            candidate_id,version,kind,asset,horizon,regime,source_key,contract_id,policy_hash,
-            registered_at,decision_cutoff_id,status,contract,training_evidence,prospective,updated_at)
-            VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'COLLECTING',%s::jsonb,%s::jsonb,'{}'::jsonb,%s)
-            ON CONFLICT(candidate_id) DO NOTHING""",
-            (h["hypothesis_id"],VERSION,h["kind"],scope.get("asset"),scope.get("horizon"),
-             scope.get("regime"),scope.get("source_key"),scope.get("contract_id"),scope.get("policy_hash"),
-             clock,cutoff,_json(identity),_json(h.get("evidence") or {}),clock))
+        registrations.append({
+            "candidate_id":h["hypothesis_id"],"version":VERSION,"kind":h["kind"],
+            "asset":scope.get("asset"),"horizon":scope.get("horizon"),"regime":scope.get("regime"),
+            "source_key":scope.get("source_key"),"contract_id":scope.get("contract_id"),
+            "policy_hash":scope.get("policy_hash"),"registered_at":clock.isoformat(),
+            "decision_cutoff_id":cutoff,"status":"COLLECTING","contract":identity,
+            "training_evidence":h.get("evidence") or {},"prospective":{},"updated_at":clock.isoformat(),
+        })
+    if registrations:
+        c.execute("""WITH incoming AS (
+              SELECT * FROM jsonb_to_recordset(%s::jsonb) AS x(
+                candidate_id text,version text,kind text,asset text,horizon text,regime text,
+                source_key text,contract_id text,policy_hash text,registered_at timestamptz,
+                decision_cutoff_id bigint,status text,contract jsonb,training_evidence jsonb,
+                prospective jsonb,updated_at timestamptz)
+            )
+            INSERT INTO learning_v2_registry(
+              candidate_id,version,kind,asset,horizon,regime,source_key,contract_id,policy_hash,
+              registered_at,decision_cutoff_id,status,contract,training_evidence,prospective,updated_at)
+            SELECT candidate_id,version,kind,asset,horizon,regime,source_key,contract_id,policy_hash,
+                   registered_at,decision_cutoff_id,status,contract,training_evidence,prospective,updated_at
+            FROM incoming
+            ON CONFLICT(candidate_id) DO NOTHING""",(_json(registrations),))
+
     active_asset=str(snapshot.get("asset") or "")
     if active_asset:
         rows=c.execute("""SELECT candidate_id,kind,registered_at,decision_cutoff_id,status,contract,
@@ -302,7 +321,8 @@ def sync(c,snapshot,decision_rows,trade_rows,now=None):
                           WHERE version=%s AND status NOT IN ('REJECTED','EXPIRED')
                           ORDER BY registered_at ASC LIMIT %s""",
                        (VERSION,MAX_ACTIVE)).fetchall()
-    counts=Counter(); changed=0; public=[]
+
+    counts=Counter(); changed=0; public=[]; updates=[]
     for raw in rows or []:
         row=dict(raw)
         contract=row["contract"] if isinstance(row.get("contract"),dict) else json.loads(row["contract"])
@@ -317,14 +337,29 @@ def sync(c,snapshot,decision_rows,trade_rows,now=None):
                 valid_until=previous_valid.isoformat()
             else:
                 status="EXPIRED"; valid_until=None
-        c.execute("""UPDATE learning_v2_registry SET status=%s,prospective=%s::jsonb,
-                         valid_until=%s,updated_at=%s WHERE candidate_id=%s""",
-                  (status,_json(result["prospective"]),valid_until,clock,row["candidate_id"]))
+        updates.append({"candidate_id":row["candidate_id"],"status":status,
+                        "prospective":result["prospective"],"valid_until":valid_until,
+                        "updated_at":clock.isoformat()})
         changed+=1; counts[status]+=1
         public.append({"candidate_id":row["candidate_id"],"kind":row["kind"],"status":status,
                        "registered_at":candidate["registered_at"],"scope":candidate.get("scope"),
                        "proposal":candidate.get("proposal"),"prospective":result["prospective"],
                        "valid_until":valid_until,"production_influence":False})
+
+    if updates:
+        c.execute("""WITH incoming AS (
+              SELECT * FROM jsonb_to_recordset(%s::jsonb) AS x(
+                candidate_id text,status text,prospective jsonb,
+                valid_until timestamptz,updated_at timestamptz)
+            )
+            UPDATE learning_v2_registry AS r
+               SET status=incoming.status,
+                   prospective=incoming.prospective,
+                   valid_until=incoming.valid_until,
+                   updated_at=incoming.updated_at
+              FROM incoming
+             WHERE r.candidate_id=incoming.candidate_id""",(_json(updates),))
+
     champions=[]
     for kind in ("ENTRY_BLOCKER_RELAXATION","STRATEGY_ROUTER"):
         eligible=[x for x in public if x["kind"]==kind and x["status"]=="SHADOW_ELIGIBLE"]
@@ -335,11 +370,15 @@ def sync(c,snapshot,decision_rows,trade_rows,now=None):
                  scope.get("source_key"),scope.get("contract_id"),scope.get("policy_hash"))
             score=(x["prospective"].get("wilson_low") if kind=="ENTRY_BLOCKER_RELAXATION"
                    else x["prospective"].get("hit_rate_delta"))
-            if score is None: continue
-            if key not in by or score>by[key][0]: by[key]=(score,x)
-        for _,x in by.values(): champions.append({**x,"shadow_champion":True})
+            if score is None:
+                continue
+            if key not in by or score>by[key][0]:
+                by[key]=(score,x)
+        for _,x in by.values():
+            champions.append({**x,"shadow_champion":True})
     return {"version":VERSION,"registered":len(hypotheses),"evaluated":changed,
             "counts":dict(counts),"candidates":public[:64],"shadow_champions":champions[:32],
             "automatic_shadow_selection":True,"automatic_production_promotion":False,
             "decision_cutoff_id":cutoff,
             "principle":"Training cutoff is immutable; only later ledger IDs accumulate into prospective validation."}
+
