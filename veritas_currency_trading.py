@@ -552,6 +552,7 @@ class CurrencyTradingCoordinator:
                                         "detail_code": detail,
                                         "row_status": row_status,
                                         "lookup": lookup,
+                                        "stored_time_in_force": terms.get("time_in_force"),
                                         "broker_order_bound": bool(proposal.get("broker_order_id"))})
                         continue
                     if (not result.broker_order_id
