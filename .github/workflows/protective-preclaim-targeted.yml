@@ -1,0 +1,22 @@
+name: Protective Preclaim Targeted CI
+on:
+  push:
+    branches: [ "ci/protective-preclaim-24c2d6d" ]
+permissions:
+  contents: read
+jobs:
+  targeted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - run: pip install -r requirements-intelligence.txt
+      - name: Compile lock and guard
+        run: python -m py_compile veritas_book_lock.py veritas_position_guard.py veritas_portfolio_cycle.py
+      - name: Priority and fairness regressions
+        run: python -m unittest -v test_veritas_book_lock.py test_veritas_book_fairness.py
+      - name: Portfolio handoff regressions
+        run: python -m unittest -v test_veritas_portfolio_cycle.py test_veritas_pending_quote.py test_veritas_currency_feed_recovery.py
