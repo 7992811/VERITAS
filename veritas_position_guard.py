@@ -23,6 +23,7 @@ from veritas_quote_time import quote_gate, utc_datetime
 from veritas_book_lock import PriorityRLock
 
 BOOK_LOCK_ID = 90390929
+PROTECTIVE_PRECLAIM_SECONDS = 12.0
 _mutex = PriorityRLock()
 _quotes_lock = threading.Lock()
 _quotes = {}
@@ -1462,12 +1463,20 @@ def start(ns):
         while True:
             started = time.monotonic()
             phases, transaction_timing = {}, {}
-            phase, phase_started = 'position_read', started
+            preclaimed=False
+            phase, phase_started = 'preclaim', started
             try:
+                _mutex.reserve_protective_turn(PROTECTIVE_PRECLAIM_SECONDS)
+                preclaimed=True
+                phases['preclaim_seconds']=time.monotonic()-phase_started
+                phase, phase_started = 'position_read', time.monotonic()
                 with ns['pg_connect']() as c:
                     positions = [dict(z) for z in c.execute(QUOTE_POSITION_SQL).fetchall()]
                 phases['position_read_seconds']=time.monotonic()-phase_started
                 position_count = len(positions)
+                if not position_count:
+                    _mutex.cancel_protective_turn()
+                    preclaimed=False
                 phase, phase_started = 'quote_refresh', time.monotonic()
                 refresh_position_quotes(ns,positions)
                 phases['quote_refresh_seconds']=time.monotonic()-phase_started
@@ -1538,6 +1547,11 @@ def start(ns):
                               duration_seconds=round(time.monotonic()-started,3))
                 ns['emit']('paper_protective_guard_error', **snapshot())
             finally:
+                # Acquisition consumes the preclaim. If quote preparation
+                # failed or no protected rows existed, release the bounded
+                # reservation explicitly instead of waiting for TTL expiry.
+                if preclaimed:
+                    _mutex.cancel_protective_turn()
                 positions = z = c = q = None
             time.sleep(max(1.0, 15-(time.monotonic()-started)))
     threading.Thread(target=loop, daemon=True, name='veritas-paper-protection').start()
