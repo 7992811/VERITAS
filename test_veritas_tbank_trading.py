@@ -219,6 +219,63 @@ class AdapterTests(unittest.TestCase):
                     self.assertIs(call["body"][flag], False)
                 self.assertFalse(adapter.capabilities()["execution_enabled"])
 
+    def test_historical_order_recovery_uses_operations_id_and_exact_request_uuid(self):
+        sent = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+        operation_id = "current-operation-order-1"
+        self.transport.handlers["GetOperationsByCursor"] = Response({
+            "items": [{
+                "brokerAccountId": ACCOUNT,
+                "id": operation_id,
+                "instrumentUid": UID,
+                "date": sent.isoformat(),
+                "type": "OPERATION_TYPE_BUY",
+                "state": "OPERATION_STATE_EXECUTED",
+            }],
+            "hasNext": False,
+            "nextCursor": "",
+        })
+        self.transport.states[operation_id] = order(
+            client=CLIENT, status="FILLED", filled=2, orderId=operation_id,
+            stages=[stage("historical-trade-1", 2, "12.345")],
+            executedCommission=money("0.80"),
+        )
+        result = self.adapter.recover_submission_from_operations(
+            ACCOUNT, UID, CLIENT, "BUY", 2, sent)
+        self.assertEqual(result.client_order_id, CLIENT)
+        self.assertEqual(result.broker_order_id, operation_id)
+        self.assertEqual(result.status, "FILLED")
+        self.assertEqual(result.lots_executed, 2)
+        self.assertEqual(self.transport.count("PostOrder"), 0)
+        self.assertEqual(self.transport.count("GetOperationsByCursor"), 1)
+        self.assertEqual(self.transport.count("GetOrderState"), 1)
+
+    def test_historical_order_recovery_refuses_foreign_request_uuid(self):
+        sent = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+        operation_id = "foreign-operation-order-1"
+        foreign_client = "55555555-5555-4555-8555-555555555555"
+        self.transport.handlers["GetOperationsByCursor"] = Response({
+            "items": [{
+                "brokerAccountId": ACCOUNT,
+                "id": operation_id,
+                "instrumentUid": UID,
+                "date": sent.isoformat(),
+                "type": "OPERATION_TYPE_BUY",
+                "state": "OPERATION_STATE_EXECUTED",
+            }],
+            "hasNext": False,
+            "nextCursor": "",
+        })
+        self.transport.states[operation_id] = order(
+            client=foreign_client, status="FILLED", filled=2, orderId=operation_id,
+            stages=[stage("foreign-trade-1", 2, "12.345")],
+            executedCommission=money("0.80"),
+        )
+        result = self.adapter.recover_submission_from_operations(
+            ACCOUNT, UID, CLIENT, "BUY", 2, sent)
+        self.assertEqual(result.status, "UNKNOWN")
+        self.assertEqual(result.code, "HISTORICAL_ORDER_NOT_FOUND_UNRESOLVED")
+        self.assertEqual(self.transport.count("PostOrder"), 0)
+
     def test_invalid_operation_window_and_cursor_fail_before_network(self):
         base = dict(from_time=STAMP, to_time="2026-10-08T00:00:00Z")
         for change in ({"to_time": STAMP}, {"from_time": "2026-10-07"},
