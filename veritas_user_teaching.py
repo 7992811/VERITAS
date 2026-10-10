@@ -284,7 +284,11 @@ def acceleration_policy_snapshot():
                 "Harvest partial targets while retaining a protected runner when "
                 "trend structure remains confirmed."
             ),
-            "currency_scope": "Currency/live-account behavior is explicitly excluded from this policy.",
+            "currency_scope": (
+                "Currency does not inherit paper acceleration sizing/lifecycle rules. "
+                "Its early GAME_CHANGER classification is governed separately by "
+                "CTC.CURRENCY_EVENT_IMPULSE_POLICY and remains bounded by Currency risk."
+            ),
         },
         "parameter_validation": {
             "status": policy.get("parameter_validation_status","SHADOW_OOS_REQUIRED"),
