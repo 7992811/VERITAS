@@ -1,17 +1,13 @@
 """VERITAS Canonical Trading Constitution v2.
-
 This module is the machine-readable source of truth for paper/live policy.
 Production admission and sizing must read these values directly. Historical
 Rxx helpers may remain for replay, telemetry and lifecycle compatibility, but
 they have no authority to override canonical admission or portfolio limits.
-
 Principle: one trading decision -> one canonical policy path.
 """
 from __future__ import annotations
-
 VERSION = "CTC_V2_2026_10_06"
 BASIS_RUNTIME = "CTC_V2_CANONICAL_RUNTIME"
-
 STRATEGY_EPOCH = "EQ7_2026_10_07_INTRABAR_STRUCTURE"
 STRATEGY_ROLE_POLICY = {
     "IMPULSE_ONLY": {"name":"EARLY_IMPULSE","horizons":("1m","5m","1h"),"min_independent":2},
@@ -27,11 +23,6 @@ STRATEGY_ROLE_POLICY = {
                  "threshold":0.62,"strong_threshold":0.74,"min_independent":2,
                  "game_changer_probability_bypass":True},
 }
-
-# Currency uses the owner event-impulse classifier only as an early structural
-# entry classification. It does NOT inherit paper-only temporary leverage caps,
-# trend-day runner expansion, profit-protection overrides, or dynamic-TP state.
-# All sizing remains owned by the Currency portfolio/risk governor.
 CURRENCY_EVENT_IMPULSE_POLICY = {
     "version":"CURRENCY_EVENT_IMPULSE_BRIDGE_V1",
     "enabled":True,
@@ -44,9 +35,6 @@ CURRENCY_EVENT_IMPULSE_POLICY = {
     "allow_dynamic_tp_override":False,
     "risk_authority":"currency_live_risk_policy",
 }
-
-# Explicit owner correction, 2026-10-06. These are operational safeguards;
-# numeric defaults are not an empirically validated trading edge.
 STRUCTURAL_ENTRY_POLICY = {
     "version": "CTC_SAME_TF_STRUCTURE_V1",
     "teaching_id": "USER_TF_STRUCTURE_2026_10_06",
@@ -60,9 +48,6 @@ STRUCTURAL_ENTRY_POLICY = {
     "minimum_net_reward_risk": 1.15,
     "parameter_validation_status": "UNVALIDATED_DEFAULTS",
 }
-
-# The owner's 7 October correction explicitly refines the previous closed-bar
-# rule. Keep that earlier policy and its immutable teaching record intact.
 BREAKOUT_LIFECYCLE_POLICY = {
     "version": "CTC_INTRABAR_STRUCTURE_V1",
     "teaching_id": "USER_INTRABAR_STRUCTURE_2026_10_07",
@@ -87,9 +72,6 @@ BREAKOUT_LIFECYCLE_POLICY = {
     "immutable_event_time": True, "one_allocation_per_level_event": True,
     "parameter_validation_status": "OWNER_RULE_WITH_UNVALIDATED_NUMERIC_DEFAULTS",
 }
-
-# Daily context is native D1 from the execution instrument. The actual rebound
-# confirmation, swing stop, ATR and target remain on the selected entry TF.
 MA_REBOUND_POLICY = {
     "version": "CTC_DAILY_MA_REBOUND_V1",
     "teaching_id": "USER_DAILY_MA_REBOUND_2026_10_07",
@@ -104,7 +86,6 @@ MA_REBOUND_POLICY = {
     "independent_structural_breakout_remains_available": True,
     "parameter_validation_status": "UNVALIDATED_DEFAULTS",
 }
-
 STAGE_ORDER = (
     "DATA",
     "THESIS",
@@ -115,7 +96,6 @@ STAGE_ORDER = (
     "LIFECYCLE",
     "LEARNING",
 )
-
 OBJECTIVE_POLICY = {
     "hard_constraint": "POSITIVE_POST_COST_ECONOMICS",
     "priority_order": (
@@ -131,7 +111,6 @@ OBJECTIVE_POLICY = {
         "win rate, then net profit/capture quality, then drawdown."
     ),
 }
-
 COST_POLICY = {
     "commission_rate_per_side": 0.0004,
     "slippage_rate_per_side": 0.0004,
@@ -145,7 +124,6 @@ COST_POLICY = {
     "funding_free_seconds": 86400,
     "funding_basis": "ACT/365.25_AFTER_FIRST_24H_ON_CURRENT_NOTIONAL",
 }
-
 HARD_VETOES = frozenset({
     "UNSUPPORTED_PAPER_ASSET","UNSUPPORTED_ASSET_OR_SOURCE",
     "PRIMARY_SOURCE_GATE_FAILED","PRIMARY_SOURCE_MISSING","PRIMARY_TOP_OF_BOOK_MISSING",
@@ -171,7 +149,6 @@ HARD_VETOES = frozenset({
     "CURRENCY_MTF_DIRECTION_CONFLICT",
     "RR_BELOW_FINAL_FLOOR", "NET_REWARD_RISK_BELOW_FLOOR",
 })
-
 SOFT_VETOES = frozenset({
     "R69_WAIT_LOCAL_BREAKOUT","R69_BREAKOUT_ACTIVITY_REQUIRED",
     "R66_WAIT_RETEST","R66_CLOSED_CONTEXT_STALE","R66_SENIOR_BREAK_NOT_HELD",
@@ -181,18 +158,14 @@ SOFT_VETOES = frozenset({
     "SENIOR_CONTEXT_CAUTION","MARGINAL_SETUP_HISTORY",
     "MANAGEMENT_DOMINATED_NEGATIVE_HISTORY","LOWER_TF_SOFT_INVALIDATION_OF_SENIOR_CORE",
 })
-
 def veto_severity(code):
     code = str(code or "")
     if code in SOFT_VETOES:
         return "SOFT"
     if code in HARD_VETOES:
         return "HARD"
-    # Unknown execution blockers are fail-closed until explicitly classified.
     return "HARD"
-
 PORTFOLIO_ORDER = ("Impulse","Aggressive","Champion","Challenger","Currency")
-
 PORTFOLIO_POLICIES = {
     "Impulse": {
         "mode":"IMPULSE_ONLY","threshold":0.64,"strong_threshold":0.76,"min_independent":2,
@@ -225,12 +198,7 @@ PORTFOLIO_POLICIES = {
         "strong_threshold":0.74,"min_independent":2,"allowed_assets":("CNYRUBF",),
         "initial_nav_rub":10_000.0,"directions":("LONG","SHORT","CASH"),
         "initial_normal":0.50,"initial_super":1.00,"probe_normal":0.05,"probe_super":0.10,
-        # Broker futures are indivisible. An admitted initial entry may request
-        # one contract, subject to fresh margin, notional and net stop-risk caps.
-        # This is not a multiplier for the target and never applies to ADD.
         "minimum_initial_contracts":1,
-        # Owner instruction, 2026-10-08: exact post-cost floor for Currency
-        # broker plans, both owner-directed and model-generated.
         "live_minimum_net_reward_risk":1.0015,
         "manual_account_risk_policy":"OWNER_STOP_RISK_ONLY_V1",
         "manual_account_history_required":False,
@@ -240,7 +208,6 @@ PORTFOLIO_POLICIES = {
         "configuration_status":"CONFIGURED","runtime_status":"LIVE_RUNTIME_GATED",
     },
 }
-
 DRAWDOWN_PROFILES = {
     "STANDARD":{"normal_until":0.08,"caution_until":0.11,"defense_1_until":0.135,
                 "caution_multiplier":0.90,"defense_1_multiplier":0.70,"defense_2_multiplier":0.45},
@@ -249,7 +216,6 @@ DRAWDOWN_PROFILES = {
     "CURRENCY":{"normal_until":0.20,"caution_until":0.25,"defense_1_until":0.30,
                 "caution_multiplier":0.90,"defense_1_multiplier":0.70,"defense_2_multiplier":0.45},
 }
-
 def runtime_portfolio_policy(name):
     p=dict(PORTFOLIO_POLICIES[str(name)])
     p["max_fraction"]=float(p["max_single_asset_fraction"])
@@ -258,7 +224,6 @@ def runtime_portfolio_policy(name):
     if "allowed_horizons" in p:
         p["allowed_horizons"]=tuple(p["allowed_horizons"])
     return p
-
 def drawdown_profile(portfolio=None, mode=None):
     name=str(portfolio or "")
     mode=str(mode or "")
@@ -282,7 +247,6 @@ def drawdown_profile(portfolio=None, mode=None):
         "defense_1_multiplier":float(cfg["defense_1_multiplier"]),
         "defense_2_multiplier":float(cfg["defense_2_multiplier"]),
     }
-
 PAPER_RISK_POLICY = {
     "per_idea_structural_stop_risk_cap_nav": 0.15,  # Owner, 2026-10-08: all orders, including automatic.
     "standard_drawdown_profile": {
@@ -298,7 +262,6 @@ PAPER_RISK_POLICY = {
         "hard_stop": 0.20,
     },
 }
-
 LIVE_RISK_POLICY = {
     "max_stop_risk_nav": PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"],
     "max_total_open_stop_risk_nav": PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"],
@@ -311,10 +274,8 @@ LIVE_RISK_POLICY = {
     "allow_new_risk_without_durable_storage": False,
     "principle": "Live account remains independently fail-closed and stricter than research books.",
 }
-
 def currency_live_risk_policy(drawdown=0.0):
     """Live Currency limits derived from the Currency portfolio itself.
-
     Stop-risk, durable-state, broker-reconciliation and kill-switch controls
     remain independent hard gates. Gross exposure follows the same Currency
     drawdown governor used by canonical sizing instead of the unrelated generic
@@ -347,7 +308,6 @@ def currency_live_risk_policy(drawdown=0.0):
         "allow_new_risk_without_durable_storage":False,
         "principle":"Currency live risk follows the Currency portfolio drawdown and gross policy; 15% stop-risk, reconciliation and kill-switch remain hard gates.",
     }
-
 SOURCE_POLICY = {
     "one_valid_primary_source_for_paper": True,
     "source_identity_pinned_for_position_lifetime": True,
@@ -358,7 +318,6 @@ SOURCE_POLICY = {
     "mixed_source_episode_learning_eligible": False,
     "nq_proxy_execution_allowed": False,
 }
-
 SIGNAL_POLICY = {
     "published_direction_is_execution_authority": False,
     "published_direction": ("LONG", "SHORT"),
@@ -371,7 +330,6 @@ SIGNAL_POLICY = {
     "cost_negative_probe_allowed": False,
     "actual_price_anti_chase_remains_hard": True,
 }
-
 LIFECYCLE_POLICY = {
     "take_profit_is_partial_when_position_allows": True,
     "default_tp_runner_ratio": 0.50,
@@ -385,18 +343,13 @@ LIFECYCLE_POLICY = {
         "or an actual thesis/risk exit."
     ),
 }
-
-# Owner-directed paper trend acceleration; detailed data lives in a dedicated
-# policy module to keep this frozen constitution within its architecture ceiling.
 from veritas_trend_acceleration_policy import TREND_ACCELERATION_POLICY, TREND_DAY_EFFICIENCY_POLICY
-
 SETUP_GRADES = {
     "A+": "Institutional quality; eligible for strongest scaling subject to risk.",
     "A": "High quality; normal/full staged execution.",
     "B": "Exploratory; Impulse/Aggressive only at deliberately small size.",
     "C": "NO_TRADE.",
 }
-
 LEARNING_POLICY = {
     "independent_market_episode_not_portfolio_copy": True,
     "exclude_mixed_price_sources": True,
@@ -416,12 +369,8 @@ LEARNING_POLICY = {
     ),
     "knowledge_count_does_not_raise_intelligence_by_itself": True,
 }
-
-
 def _rule(rule_id, domain, statement):
     return {"id": rule_id, "domain": domain, "status": "CANON", "statement": statement}
-
-
 CANONICAL_RULES = [
     _rule("CTC01","governance","One current canonical policy path owns every trading decision; historical Rxx helpers are audit history."),
     _rule("CTC02","governance","Decision order is DATA -> THESIS -> TIMING -> ECONOMICS -> RISK -> SIZE -> LIFECYCLE -> LEARNING."),
@@ -431,7 +380,6 @@ CANONICAL_RULES = [
     _rule("CTC06","classification","Every executable setup is A+, A, B or C; grade never overrides data, invalidation or risk hard gates."),
     _rule("CTC07","classification","B is exploratory only for Impulse/Aggressive; C is NO_TRADE."),
     _rule("CTC08","governance","A famous manager, paper or expert principle is a hypothesis until VERITAS validates it on its own clean outcomes."),
-
     _rule("CTC09","data","A paper position may use one valid primary source after source/session/freshness checks."),
     _rule("CTC10","data","The position owns its entry source identity for its entire lifetime."),
     _rule("CTC11","data","Entry, marking, MFE/MAE, stops, targets and exits use the same source identity and exact contract when known."),
@@ -439,7 +387,6 @@ CANONICAL_RULES = [
     _rule("CTC13","data","If the pinned source is stale/unavailable, freeze execution and retain the last verified mark rather than cross-source repricing."),
     _rule("CTC14","data","NQ execution requires a direct futures quote; QQQ/cash-index proxy cannot confirm or fill NQ."),
     _rule("CTC15","data","Mixed-source, contract-mismatch and corrupted-price episodes are excluded from learning without rewriting the accounting ledger."),
-
     _rule("CTC16","signal","Quality filtering occurs before publication of LONG/SHORT."),
     _rule("CTC17","signal","A thesis opens risk on a confirmed structural breakout or native daily SMA50/200 rebound, confirmed on the chosen entry timeframe."),
     _rule("CTC18","signal","Refreshing a directional forecast never resets breakout time, restores a spent event, or creates a new current-price trigger."),
@@ -449,7 +396,6 @@ CANONICAL_RULES = [
     _rule("CTC22","signal","A lower-timeframe soft conflict cannot by itself liquidate an intact senior-horizon core position."),
     _rule("CTC23","signal","Absolute setup invalidation blocks new risk; soft INVALIDATED/NO_TRADE telemetry alone does not force an open position to exit."),
     _rule("CTC24","signal","A new continuation event receives a new identity; lateness is measured from the new event, not from the spent parent breakout."),
-
     _rule("CTC25","structure","Breakout levels and originating event identity are fixed from closed structural observations and cannot chase price."),
     _rule("CTC26","structure","LONG continuation is HH/HL; SHORT continuation is LH/LL; structure is symmetrical."),
     _rule("CTC27","structure","Breakout quality uses level break, acceptance, volume/activity, volatility expansion and subsequent structure."),
@@ -458,13 +404,11 @@ CANONICAL_RULES = [
     _rule("CTC30","multitimeframe","Quote breakouts explicitly record trigger, structural-stop, ATR and historical-target timeframes. Fast entries protect the certified parent swing; legacy close-confirmed entries retain their same-timeframe anchors."),
     _rule("CTC31","multitimeframe","Senior context can reduce tactical size but does not automatically veto a qualified fast breakout/reversal."),
     _rule("CTC32","timing","Anti-chase is evaluated at the fresh executable price against the current trigger and realized volatility."),
-
     _rule("CTC33","economics","Commission is 0.04% per side and paper slippage is 0.04% per side unless a more conservative observed spread applies."),
     _rule("CTC34","economics","Base modeled round trip is 0.16%; model minimum move is max(0.19%, 1.1 x costs). Owner manual orders retain costs without profitability filters."),
     _rule("CTC35","economics","Funding is 16% ACT/365.25 on current notional after a free first 24 hours."),
     _rule("CTC36","economics","Target, stop and adverse modeled fills are recomputed at final entry after all setup/sizing mutations."),
     _rule("CTC37","economics","Model adds need their own remaining room and economics; manual adds retain held levels and the whole-position stop-risk budget."),
-
     _rule("CTC38","risk","Structural invalidation is chosen first; position size is then fitted to stop-risk, never the reverse."),
     _rule("CTC39","risk","All manual and automatic per-idea stop risk, including costs, is capped at 15% NAV."),
     _rule("CTC40","risk","Drawdown changes size/gross limits; it does not rewrite signal quality."),
@@ -473,7 +417,6 @@ CANONICAL_RULES = [
     _rule("CTC43","sizing","New allocations use 5% increments. Historical-target partial exits reduce actual units by the recorded target fractions."),
     _rule("CTC44","sizing","Aggressive starts about 50% on normal signal and 100% on SUPER, then earns leverage only through stronger structure/evidence and protected risk."),
     _rule("CTC45","sizing","Champion/Challenger have no implicit leverage: canonical single-asset fraction is capped at 100% unless separately authorized."),
-
     _rule("CTC46","lifecycle","A position lifecycle is OPEN -> ADD -> PROTECT -> HARVEST -> RUNNER -> EXIT; only lifecycle authority changes open size."),
     _rule("CTC47","add","Add only after a distinct same-direction confirmation, favorable progress, sufficient remaining edge and stop-risk capacity."),
     _rule("CTC48","add","Never automatically average a losing position; pyramiding is earned by favorable movement and new evidence."),
@@ -483,7 +426,6 @@ CANONICAL_RULES = [
     _rule("CTC52","profit","Partial profit is dynamic: stronger trend -> smaller harvest and larger runner; weakening/near obstacle -> larger harvest."),
     _rule("CTC53","profit","After harvest, reload is a new add decision requiring fresh breakout/structure/volume and positive post-cost economics."),
     _rule("CTC54","exit","Soft INVALIDATED, generic WAIT or a tiny opposite fast signal cannot force a fee-negative discretionary exit while thesis and hard risk remain intact."),
-
     _rule("CTC55","exit","Immediate full exit authority is reserved for true stop/risk breach, explicit hard thesis invalidation, confirmed direction flip/structural failure or portfolio hard stop."),
     _rule("CTC56","learning","One market episode is one independent learning observation even if multiple portfolios traded it."),
     _rule("CTC57","learning","Classify direction error separately from late entry, stop error, exit error, sizing error and source/data error."),
@@ -491,7 +433,6 @@ CANONICAL_RULES = [
     _rule("CTC59","learning","New knowledge/rules begin in SHADOW and require OOS, Vault, cost and regime/time robustness before promotion."),
     _rule("CTC60","learning","Intelligence rises from validated decision/outcome quality and clean learning, not from the raw count of stored rules."),
 ]
-
 RESOLVED_IMPLEMENTATION_GAPS = [
     {"id":"GAP01","resolution":"Champion single-asset cap is 100% in canonical/runtime policy."},
     {"id":"GAP02","resolution":"Challenger single-asset cap is 100% in canonical/runtime policy."},
@@ -513,7 +454,6 @@ RESOLVED_IMPLEMENTATION_GAPS = [
     {"id":"GAP18","resolution":"Production candidate routing is patched to canonical signal-first selectors."},
 ]
 IMPLEMENTATION_GAPS = []
-
 def validate_constitution():
     ids = [r["id"] for r in CANONICAL_RULES]
     if len(ids) != len(set(ids)):
@@ -541,6 +481,4 @@ def validate_constitution():
             LIVE_RISK_POLICY["max_correlated_stop_risk_nav"])):
         raise ValueError("owner stop-risk cap drift")
     return True
-
-
 validate_constitution()
