@@ -234,7 +234,8 @@ class EntryLeaseFreshnessTests(unittest.TestCase):
             self.assertEqual(wall_gate['reason'], 'STRUCTURAL_EVENT_EXPIRED')
         row = dict(raw, horizon='1m', research_decision=direction, timeframe_entry_context=context)
         mutex = SimpleNamespace(acquire=Mock(return_value=False),
-                                reserve_entry_turn=Mock(), cancel_entry_turn=Mock())
+                                reserve_entry_turn=Mock(), cancel_entry_turn=Mock(),
+                                snapshot=Mock(return_value={'ordinary_waiters':0}))
         connect = Mock(side_effect=AssertionError('BUSY must not open a database'))
         # The BUSY branch never uses the portfolio monolith; do not import it
         # merely to exercise the production lease decision.
