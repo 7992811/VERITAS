@@ -53,6 +53,7 @@ def entry_metadata(row, units):
     event=context.get('event') or {}
     if not SB.applies(context):
         return {}
+    event_impulse=VTDE.event_impulse_assess(row,event.get('direction'))
     return {'structural_lifecycle_version':VERSION,
             'trigger_timeframe':event['trigger_timeframe'],
             'structural_timeframe':event['structural_timeframe'],
@@ -64,6 +65,8 @@ def entry_metadata(row, units):
             'active_target_event_snapshot':deepcopy(event),
             'active_target_stage':0,'active_ladder_units':units,
             'runner_target_price':event['runner_target_price'],
+            'entry_event_impulse':deepcopy(event_impulse),
+            'event_impulse_target_reference_mode':event_impulse.get('target_reference_mode'),
             'target_lifecycle_history':[]}
 
 
@@ -104,19 +107,68 @@ def _trend_acceleration_state(row,direction,policy):
     integrity=plan.get('trade_integrity') or {}
     if integrity.get('hard_invalidation') or integrity.get('fast_tf_conflict'):
         return dict(out,reason='ACCELERATION_INTEGRITY_BLOCK')
+
     hs=(row or {}).get('horizon_structure') or {}
     state=str(hs.get('state') or '')
     tier=str((row or {}).get('signal_tier') or (row or {}).get('execution_signal_tier') or '')
-    try:
-        expected=abs(float(plan.get('expected_move_pct') or (row or {}).get('expected_move_pct') or 0.0))
-    except Exception:
-        expected=0.0
     inst=(row or {}).get('institutional_signal') or {}
     try:
         evidence=int((row or {}).get('independent_evidence_families')
                      or ((inst.get('evidence_independence') or {}).get('independent_count')) or 0)
     except Exception:
         evidence=0
+
+    horizon=str((row or {}).get('horizon') or '')
+    supporting=set(str(x) for x in ((row or {}).get('_supporting_horizons')
+                                   or (row or {}).get('supporting_horizons') or []))
+    trend_ctx=(row or {}).get('trend_entry_context') or plan.get('trend_entry_context') or {}
+    mid=False
+    for key in ('confirmation_15m_trend','confirmation_30m_trend'):
+        confirmation=trend_ctx.get(key) or {}
+        if confirmation.get('confirmed') and confirmation.get('direction')==direction:
+            mid=True
+    senior=bool(supporting.intersection(set(cfg.get('senior_confirmation_timeframes') or ('1h','4h'))))
+    senior=senior or (horizon in ('1h','4h') and state=='CONFIRMED_TREND')
+
+    # P0 owner rule: a price/structure/activity volatility shock is a separate
+    # execution regime. It must not be rejected merely because an old fixed
+    # target is already spent. News confirms holding/scaling but is not needed
+    # to enter the first tranche.
+    event_impulse=VTDE.event_impulse_assess(row,direction)
+    if event_impulse.get('eligible'):
+        ecfg=cfg.get('event_impulse') or {}
+        if mode=='AGGRESSIVE':
+            fast=float(ecfg.get('fast_target_aggressive') or 1.50)
+            mid_target=float((cfg.get('stage_targets_aggressive') or {}).get('MID_CONFIRMED') or 3.00)
+            maximum=float(ecfg.get('confirmed_target_aggressive') or 5.00)
+        else:
+            fast=float(ecfg.get('fast_target_standard') or .50)
+            mid_target=float((cfg.get('stage_targets_standard') or {}).get('MID_CONFIRMED') or .75)
+            maximum=float(ecfg.get('confirmed_target_standard') or 1.00)
+        # A senior confirmation is sufficient for maximum scale. A mid
+        # confirmation plus a confirmed catalyst is also sufficient because
+        # the event has already been established causally by price/activity.
+        if senior or (mid and event_impulse.get('news_confirmed')):
+            stage='EVENT_MAX_CONFIRMED'; target=maximum
+        elif mid:
+            stage='EVENT_MID_CONFIRMED'; target=mid_target
+        else:
+            stage='EVENT_FAST_CONFIRMED'; target=fast
+        caps=(cfg.get('temporary_caps') or {}).get(mode) or {}
+        target=min(target,float(caps.get('max_fraction') or target))
+        return {'active':target>0,'stage':stage,'target_fraction':target,
+                'reason':'OWNER_P0_EVENT_IMPULSE_ACCELERATION',
+                'evidence':evidence,'structure_state':state,'signal_tier':tier,
+                'mid_confirmation':mid,'senior_confirmation':senior,
+                'event_impulse':deepcopy(event_impulse),
+                'temporary_max_fraction':caps.get('max_fraction'),
+                'temporary_max_gross':caps.get('max_gross'),
+                'policy_version':cfg.get('version')}
+
+    try:
+        expected=abs(float(plan.get('expected_move_pct') or (row or {}).get('expected_move_pct') or 0.0))
+    except Exception:
+        expected=0.0
     event=TFP.context_of(row).get('event') or {}
     try:
         progress=float(event.get('target_progress') or 0.0)
@@ -132,17 +184,6 @@ def _trend_acceleration_state(row,direction,policy):
     if state not in accepted and tier not in ('SUPER_LONG','SUPER_SHORT'):
         return dict(out,reason='ACCELERATION_STRUCTURE_NOT_CONFIRMED',structure_state=state)
 
-    horizon=str((row or {}).get('horizon') or '')
-    supporting=set(str(x) for x in ((row or {}).get('_supporting_horizons')
-                                   or (row or {}).get('supporting_horizons') or []))
-    trend_ctx=(row or {}).get('trend_entry_context') or plan.get('trend_entry_context') or {}
-    mid=False
-    for key in ('confirmation_15m_trend','confirmation_30m_trend'):
-        confirmation=trend_ctx.get(key) or {}
-        if confirmation.get('confirmed') and confirmation.get('direction')==direction:
-            mid=True
-    senior=bool(supporting.intersection(set(cfg.get('senior_confirmation_timeframes') or ('1h','4h'))))
-    senior=senior or (horizon in ('1h','4h') and state=='CONFIRMED_TREND')
     fast=(horizon in set(cfg.get('fast_horizons') or ('1m','5m'))
           and (state=='CONFIRMED_TREND' or tier in ('SUPER_LONG','SUPER_SHORT')))
     trend_day=VTDE.assess(row,direction,policy,mid=mid,senior=senior,
@@ -240,6 +281,8 @@ def scale_request(position,row,price,nav,policy,now=None,requested=None):
     acceleration=_trend_acceleration_state(row,position.get('direction'),policy)
     if acceleration.get('active'):
         row['_trend_acceleration']=dict(acceleration)
+        if acceleration.get('event_impulse'):
+            row['_event_impulse']=deepcopy(acceleration.get('event_impulse'))
         if acceleration.get('trend_day_efficiency'):
             row['_trend_day_efficiency']=deepcopy(acceleration.get('trend_day_efficiency'))
         cap=max(base_cap,float(acceleration.get('temporary_max_fraction') or base_cap))
@@ -268,6 +311,8 @@ def add_metadata(position,row,units,ts):
                     'new_ladder':deepcopy(event['target_ladder'])})
     trend_day=deepcopy(row.get('_trend_day_efficiency') or
                          ((row.get('_trend_acceleration') or {}).get('trend_day_efficiency')) or {})
+    event_impulse=deepcopy(row.get('_event_impulse') or
+                           ((row.get('_trend_acceleration') or {}).get('event_impulse')) or {})
     return {'active_target_event_snapshot':deepcopy(event),
             'active_target_ladder':deepcopy(event['target_ladder']),
             'active_target_stage':0,'active_ladder_units':units,
@@ -275,6 +320,8 @@ def add_metadata(position,row,units,ts):
             'runner_target_price':event['runner_target_price'],
             'last_structural_confirmation':deepcopy(event),
             'last_trend_day_efficiency':trend_day or None,
+            'last_event_impulse':event_impulse or None,
+            'event_impulse_target_reference_mode':event_impulse.get('target_reference_mode') if event_impulse else p.get('event_impulse_target_reference_mode'),
             'target_lifecycle_history':history[-32:],
             'r17_tp1_done':False}
 
@@ -285,7 +332,36 @@ def _protected_structural_runner_ratio(position):
     return VTDE.protected_runner_ratio(position,p)
 
 
+def _event_impulse_fixed_tp_deferred(position):
+    p=payload(position)
+    cfg=((getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('event_impulse') or {})
+    if not cfg.get('enabled') or not cfg.get('defer_fixed_take_profit'):
+        return {'deferred':False,'reason':'EVENT_IMPULSE_TP_POLICY_DISABLED'}
+    entry=p.get('entry_event_impulse') or {}
+    latest=p.get('last_event_impulse') or {}
+    impulse=latest if isinstance(latest,dict) and latest.get('eligible') else entry
+    if not isinstance(impulse,dict) or not impulse.get('eligible'):
+        return {'deferred':False,'reason':'EVENT_IMPULSE_NOT_ACTIVE'}
+    # Once the ordinary position-management loop has explicitly classified the
+    # trend as no longer active, fixed targets may be reassessed again. Before
+    # that first management observation, the causal entry impulse owns the hold.
+    if 'r46_trend_hold_active' in p:
+        active=bool(p.get('r46_trend_hold_active'))
+    else:
+        active=True
+    if not active:
+        return {'deferred':False,'reason':'EVENT_IMPULSE_EXHAUSTED_REASSESS_TARGETS',
+                'event_impulse':deepcopy(impulse)}
+    return {'deferred':True,'reason':'OWNER_P0_EVENT_IMPULSE_FIXED_TP_DEFERRED',
+            'event_impulse':deepcopy(impulse),
+            'target_reference_mode':cfg.get('target_reference_mode'),
+            'exit_authority':list(cfg.get('exit_authority') or ())}
+
+
 def target_reduction(position,price,nav,ts):
+    defer=_event_impulse_fixed_tp_deferred(position)
+    if defer.get('deferred'):
+        return {'eligible':False,**defer}
     ladder=active_ladder(position)
     p=payload(position)
     stage=p.get('active_target_stage',0)
