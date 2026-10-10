@@ -278,6 +278,17 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]], *,
         buy = direction == "LONG"
         entry_model = simulated_fill(asset, "BUY" if buy else "SELL_SHORT", entry,
                                      fraction, bid=p.get("best_bid"), ask=p.get("best_ask"))
+        if p.get("execution_style")=="MARKETABLE_LIMIT_NEAREST_OFFER_SWEEP":
+            entry_model.update(
+                execution_style="MARKETABLE_LIMIT_NEAREST_OFFER_SWEEP",
+                fill_confirmation_required=bool(p.get("fill_confirmation_required",True)),
+                partial_fill_policy=p.get("partial_fill_policy"),
+                reprice_policy=p.get("reprice_policy"),
+                execution_instrument_required=bool(p.get("execution_instrument_required",True)),
+                orderbook_price_source=("BEST_ASK" if buy else "BEST_BID") if entry_model.get("quote_valid")
+                    else "REFERENCE_FALLBACK_NO_TOP_OF_BOOK",
+                full_fill_assumed=bool(entry_model.get("quote_valid")),
+            )
         entry_fill = entry_model["fill_price"]
         # The current exit engine uses an adverse reference-price fill; use that
         # same model here, including size impact and both commission legs.
@@ -362,6 +373,11 @@ def economics_gate(asset: str, plan: Optional[Dict[str, Any]], *,
         "weighted_target_price":weighted_target if weighted else None,
         "modeled_weighted_target_fill":weighted_fill if weighted else None,
         "weighted_target_distance_pct":weighted_move if weighted else None,
+        "execution_style":p.get("execution_style"),
+        "fill_confirmation_required":bool(p.get("fill_confirmation_required",False)),
+        "partial_fill_policy":p.get("partial_fill_policy"),
+        "reprice_policy":p.get("reprice_policy"),
+        "execution_instrument_required":bool(p.get("execution_instrument_required",False)),
         "principle": "Actual target/stop economics after adverse fills, commission and funding.",
     }
 

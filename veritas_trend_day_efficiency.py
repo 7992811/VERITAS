@@ -42,6 +42,47 @@ def event_impulse_assess(row, direction):
         # Data/session vetoes are not thesis invalidations in the canonical
         # signal path; genuine thesis invalidation remains an absolute block.
         return dict(out,reason='EVENT_IMPULSE_THESIS_INVALID')
+
+    context=(row.get('timeframe_entry_context')
+             or plan.get('timeframe_entry_context')
+             or row.get('trend_entry_context')
+             or plan.get('trend_entry_context') or {})
+    event=context.get('event') or {}
+    event_direction=str(event.get('direction') or '')
+    event_type=str(event.get('event_type') or '')
+    breakout=bool(event_direction==direction and
+                  ('BREAKOUT' in event_type or 'CONTINUATION' in event_type))
+    shock=event.get('intrabar_volatility_shock') or {}
+    game_changer=bool(
+        breakout
+        and event.get('game_changer_extreme') is True
+        and event.get('senior_level_break') is True
+        and shock.get('severity')=='GAME_CHANGER_EXTREME'
+    )
+    event_score=abs(_num(row.get('event_shadow_score'),0.0) or 0.0)
+    news_confirmed=bool(row.get('news_catalyst_confirmed')
+                        or row.get('event_news_confirmation')
+                        or event_score>=0.65)
+    if game_changer:
+        return {
+            'eligible':True,'reason':'GAME_CHANGER_EXTREME_CONFIRMED',
+            'owner_priority':cfg.get('owner_priority'),'direction':direction,
+            'regime':'INTRABAR_GAME_CHANGER',
+            'signal_tier':str(row.get('signal_tier') or direction),
+            'structure_score':None,'evidence':None,'breakout':True,
+            'activity_confirmed':bool(event.get('activity_confirmed')),
+            'relative_volume':None,'volatility_expansion':True,
+            'intrabar_volatility_shock':shock,
+            'senior_level_break':True,'game_changer_extreme':True,
+            'immediate_max':bool(cfg.get('game_changer_immediate_max',True)),
+            'forming_bar_close_required':bool(cfg.get('forming_bar_close_required',False)),
+            'news_confirmed':news_confirmed,'event_shadow_score':event_score,
+            'entry_requires_news':bool(cfg.get('entry_requires_news',False)),
+            'defer_fixed_take_profit':bool(cfg.get('defer_fixed_take_profit',True)),
+            'target_reference_mode':cfg.get('target_reference_mode'),
+            'event_id':event.get('event_id'),'event_type':event_type,
+        }
+
     regime=str(row.get('regime') or '')
     if regime not in set(cfg.get('accepted_regimes') or ()):
         return dict(out,reason='EVENT_IMPULSE_HIGH_VOL_REGIME_REQUIRED',regime=regime)
@@ -64,15 +105,6 @@ def event_impulse_assess(row, direction):
         evidence=0
     if evidence<int(cfg.get('minimum_independent_evidence') or 4):
         return dict(out,reason='EVENT_IMPULSE_EVIDENCE_INSUFFICIENT',evidence=evidence)
-    context=(row.get('timeframe_entry_context')
-             or plan.get('timeframe_entry_context')
-             or row.get('trend_entry_context')
-             or plan.get('trend_entry_context') or {})
-    event=context.get('event') or {}
-    event_direction=str(event.get('direction') or '')
-    event_type=str(event.get('event_type') or '')
-    breakout=bool(event_direction==direction and
-                  ('BREAKOUT' in event_type or 'CONTINUATION' in event_type))
     if cfg.get('breakout_required') and not breakout:
         return dict(out,reason='EVENT_IMPULSE_BREAKOUT_REQUIRED',
                     event_type=event_type,event_direction=event_direction)
@@ -90,10 +122,6 @@ def event_impulse_assess(row, direction):
                     or st.get('volatility_expansion'))
     if cfg.get('volatility_expansion_required') and not volatility:
         return dict(out,reason='EVENT_IMPULSE_VOLATILITY_EXPANSION_REQUIRED')
-    event_score=abs(_num(row.get('event_shadow_score'),0.0) or 0.0)
-    news_confirmed=bool(row.get('news_catalyst_confirmed')
-                        or row.get('event_news_confirmation')
-                        or event_score>=0.65)
     return {
         'eligible':True,'reason':'EVENT_IMPULSE_CONFIRMED',
         'owner_priority':cfg.get('owner_priority'),'direction':direction,

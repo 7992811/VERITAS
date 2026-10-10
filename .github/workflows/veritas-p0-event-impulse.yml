@@ -16,6 +16,6 @@ jobs:
       - name: Install runtime dependencies
         run: pip install -r requirements-intelligence.txt
       - name: Compile P0 event impulse path
-        run: python -m py_compile veritas_trend_acceleration_policy.py veritas_trend_day_efficiency.py veritas_structural_lifecycle.py veritas_user_teaching.py veritas_market_runtime.py veritas_trend_entry.py
+        run: python -m py_compile veritas_event_impulse.py veritas_index_future_proxy.py veritas_tbank.py veritas_structural_breakout.py veritas_trend_acceleration_policy.py veritas_trend_day_efficiency.py veritas_structural_lifecycle.py veritas_user_teaching.py veritas_market_runtime.py veritas_trend_entry.py veritas_timeframe_policy.py veritas_execution.py veritas_execution_snapshot.py veritas_canonical_runtime.py veritas_portfolio_runtime.py
       - name: Owner P0 impulse, stale-plan and evening-session regressions
-        run: python -m unittest -v test_veritas_trend_acceleration.py test_veritas_v90_market_cases.py test_veritas_market_prefetch.py
+        run: python -m unittest -v test_veritas_event_impulse_p0.py test_veritas_index_future_proxy.py test_veritas_structural_breakout.py test_veritas_trend_acceleration.py test_veritas_v90_market_cases.py test_veritas_market_prefetch.py

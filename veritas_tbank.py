@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import veritas_index_future_proxy as VIFP
+
 VERSION = "R87_TBANK_THREE_FUTURES_ALL_TIMEFRAMES"
 TARGET = "invest-public-api.tbank.ru:443"
 PACKAGE = "tinkoff.public.invest.api.contract.v1"
@@ -184,6 +186,57 @@ def exact_instrument(reader, ticker):
     return result
 
 
+
+def resolve_index_execution_future(reader, preferred_ticker="IMOEXF"):
+    """Resolve MOEX signal execution to perpetual, else nearest expiry >1 day."""
+    candidates=[]
+    errors=[]
+    try:
+        preferred=future_metadata(reader, exact_instrument(reader, preferred_ticker))
+        candidates.append(preferred)
+    except TBankError as exc:
+        errors.append(str(exc))
+
+    # Fallback discovery is deliberately narrow and broker-native. Each
+    # candidate still passes exact UID metadata, MOEX venue and futures spec
+    # validation before the generic selector sees it.
+    if not candidates:
+        seen=set()
+        for query in ("IMOEX", "Индекс МосБиржи", "MOEX"):
+            try:
+                found=reader.call("find", query=query).get("instruments", [])
+            except Exception:
+                continue
+            for item in found:
+                uid=item.get("uid")
+                ticker=item.get("ticker")
+                if not uid or not ticker or uid in seen:
+                    continue
+                seen.add(uid)
+                try:
+                    meta=future_metadata(reader, {"uid":uid,"ticker":ticker})
+                except (TBankError,KeyError,TypeError,ValueError) as exc:
+                    errors.append(str(exc))
+                    continue
+                basic=str(meta.get("basic_asset") or meta.get("basic_asset_position_uid") or "").upper()
+                name=str(meta.get("name") or "").upper()
+                tick=str(meta.get("ticker") or "").upper()
+                if not ("IMOEX" in basic or "MOEX" in basic or "МОСБИРЖ" in name
+                        or tick=="IMOEXF"):
+                    continue
+                candidates.append(meta)
+
+    selected=VIFP.choose(candidates, now=utcnow())
+    if not selected.get("eligible"):
+        raise TBankError("INDEX_FUTURE_EXECUTION_PROXY_UNAVAILABLE")
+    instrument=dict(selected["instrument"])
+    instrument.update(execution_proxy_version=VIFP.VERSION,
+                      execution_selection=selected["selection"],
+                      signal_asset="MOEX",execution_asset="MOEXF",
+                      minimum_expiry_buffer_seconds=selected["minimum_expiry_buffer_seconds"])
+    return instrument
+
+
 def normalized_quote(item, received_at=None):
     value = price(item.get("price", {}))
     if value <= 0 or not item.get("instrument_uid") or not item.get("time"):
@@ -347,6 +400,10 @@ class TBankConnection:
                     "instruments": {a: {"label": LABELS.get(a, a), "ticker": d.get("ticker"), "uid": d.get("uid"),
                         "name": d.get("name"), "exchange": d.get("exchange"), "real_exchange": d.get("real_exchange"),
                         "expiration_date": d.get("expiration_date"), "perpetual": d.get("perpetual", False),
+                        "execution_selection": d.get("execution_selection"),
+                        "execution_proxy_version": d.get("execution_proxy_version"),
+                        "signal_asset": d.get("signal_asset"), "execution_asset": d.get("execution_asset"),
+                        "minimum_expiry_buffer_seconds": d.get("minimum_expiry_buffer_seconds"),
                         "basic_asset": d.get("basic_asset"), "currency": d.get("currency"), "lot": d.get("lot"),
                         "min_price_increment": price(d.get("min_price_increment", {})),
                         "min_price_increment_amount": price(d.get("min_price_increment_amount", {})),
@@ -411,7 +468,9 @@ class TBankConnection:
             if asset in self.instruments:
                 continue
             try:
-                instrument = future_metadata(self.reader, exact_instrument(self.reader, ticker))
+                instrument = (resolve_index_execution_future(self.reader, ticker)
+                              if asset=="MOEXF"
+                              else future_metadata(self.reader, exact_instrument(self.reader, ticker)))
                 with self.lock:
                     self.instruments[asset] = instrument
                     self.instrument_errors.pop(asset, None)

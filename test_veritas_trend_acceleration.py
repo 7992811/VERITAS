@@ -328,7 +328,62 @@ def moex_event_impulse_row(*, mid=False, supporting=None, news=False, tier="SUPE
     return row
 
 
+def moex_2146_game_changer_row():
+    row=trend_row(state="NEUTRAL",horizon="1m",tier="LONG",
+                  evidence=0,expected=0.0,supporting=[],mid=False)
+    row.update({
+        "asset":"MOEX","price":2325.0,"regime":"RANGE_LOW_VOL",
+        "independent_evidence_families":0,
+        "horizon_structure":{"direction":"NO_TRADE","score":0.0,"state":"NEUTRAL"},
+        "intraday_structure":{},
+        "event_shadow_score":0.0,
+    })
+    event={
+        "event_id":"MOEX_20261009_2146_GAME_CHANGER",
+        "event_type":"VERIFIED_QUOTE_STRUCTURAL_BREAKOUT",
+        "direction":"LONG","timeframe":"1m","trigger_timeframe":"1h",
+        "structural_timeframe":"1h","stop_timeframe":"1h","atr_timeframe":"1h",
+        "trigger_level":2324.57,"signal_price":2325.0,
+        "stop_anchor":2301.40,"stop_price":2294.0,
+        "target_price":2340.0,"spent":False,
+        "activity_confirmed":True,
+        "senior_level_break":True,
+        "game_changer_extreme":True,
+        "intrabar_volatility_shock":{
+            "severity":"GAME_CHANGER_EXTREME","eligible":True,
+            "exceeds":{"1m":True,"5m":True,"1h":True},
+            "ratios":{"1m":6.0,"5m":2.5,"1h":1.1},
+        },
+    }
+    row["timeframe_entry_context"]={"status":"OK","event":event}
+    row["trend_entry_context"]=row["timeframe_entry_context"]
+    row["trade_plan"]["timeframe_entry_context"]=row["timeframe_entry_context"]
+    row["trade_plan"]["trade_integrity"]={}
+    return row
+
+
 class EventImpulseP0Tests(unittest.TestCase):
+    def test_2146_game_changer_is_confirmed_before_2158_model_signal(self):
+        row=moex_2146_game_changer_row()
+        impulse=VTDE.event_impulse_assess(row,"LONG")
+        self.assertTrue(impulse["eligible"],impulse)
+        self.assertEqual(impulse["reason"],"GAME_CHANGER_EXTREME_CONFIRMED")
+        self.assertTrue(impulse["immediate_max"])
+        self.assertFalse(impulse["forming_bar_close_required"])
+        self.assertFalse(impulse["news_confirmed"])
+        # Lagging RANGE_LOW_VOL / neutral model state cannot erase the verified
+        # quote breakout that owns the causal 21:46 direction.
+        self.assertEqual(impulse["regime"],"INTRABAR_GAME_CHANGER")
+
+    def test_2146_game_changer_requests_portfolio_max_immediately(self):
+        row=moex_2146_game_changer_row()
+        core=VSL._trend_acceleration_state(row,"LONG",{"mode":"CORE"})
+        aggressive=VSL._trend_acceleration_state(row,"LONG",{"mode":"AGGRESSIVE"})
+        self.assertEqual(core["stage"],"GAME_CHANGER_MAX_IMMEDIATE")
+        self.assertAlmostEqual(core["target_fraction"],1.00)
+        self.assertEqual(aggressive["stage"],"GAME_CHANGER_MAX_IMMEDIATE")
+        self.assertAlmostEqual(aggressive["target_fraction"],5.00)
+
     def test_first_directional_long_can_enter_before_super_confirmation(self):
         row=moex_event_impulse_row(tier="LONG")
         impulse=VTDE.event_impulse_assess(row,"LONG")
@@ -390,6 +445,13 @@ class EventImpulseP0Tests(unittest.TestCase):
         with patch.object(VSL,"active_ladder",return_value=ladder):
             released=VSL.target_reduction(position,2400.0,2400.0,"2026-10-09T20:47:00Z")
         self.assertTrue(released["eligible"],released)
+
+    def test_owner_2146_correction_rejects_2158_as_confirmation_time(self):
+        snap=VUT.moex_2146_game_changer_snapshot()
+        self.assertEqual(snap["priority"],"P0_HIGHEST")
+        self.assertEqual(snap["case_anchor"]["causal_confirmation_time"],"21:46")
+        self.assertEqual(snap["case_anchor"]["late_confirmation_rejected"],"21:58")
+        self.assertFalse(snap["parameter_validation"]["additional_proof_required"])
 
     def test_owner_p0_teaching_requires_no_additional_proof(self):
         snap=VUT.event_impulse_policy_snapshot()
