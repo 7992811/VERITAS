@@ -316,7 +316,13 @@ class ConsoleStore:
             if not row or not row["account_id"] or not row["owner_user_id"]:
                 raise ConsoleError("ACCOUNT_AND_OWNER_BINDING_REQUIRED")
             paused = action == "pause" or (row["paused"] and action != "resume")
-            armed = action == "enable_execution" or (row["execution_requested"] and action not in ("pause", "disable_execution"))
+            # Pause is temporary and must not erase the owner's persisted
+            # execution permission. Only an explicit disable_execution action
+            # revokes it. Resume restores operation under the previously saved
+            # permission, while execution_guard still blocks all sends when paused.
+            armed = action == "enable_execution" or (
+                row["execution_requested"] and action != "disable_execution"
+            )
             c.execute(f"UPDATE {CONFIG} SET paused=%s,execution_requested=%s,revision=revision+1,updated_at=%s "
                       "WHERE environment=%s", (paused, armed, self.clock(), environment()))
             self._audit(c, action.upper(), actor, {})
