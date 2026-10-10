@@ -155,6 +155,34 @@ class BookMarkingSQLTests(unittest.TestCase):
             self.assertTrue(all(len(json.dumps(row['patch']).encode('utf-8')) < 1000
                                 for row in batch))
 
+
+    def test_runtime_mark_batch_matches_per_row_merge_without_touching_financial_fields(self):
+        rows=[position('BTC'),dict(position('ETH'),direction='SHORT')]
+        self.seed(rows)
+        with self.connect() as c:
+            before=self.contents(c)
+            trace=TracedConnection(c)
+            count=M.write_runtime_mark_batch(trace,PORTFOLIO,[
+                {'asset':'BTC','last_price':140.0,
+                 'patch':{'price_source_status':'OK','runtime_probe':'btc'}},
+                {'asset':'ETH','last_price':150.0,'patch':{}},
+            ])
+            self.assertEqual(count,2)
+            after=self.contents(c)
+            self.assertEqual(after['portfolios'],before['portfolios'])
+            self.assertEqual(after['trades'],before['trades'])
+            saved={z['asset']:z for z in after['positions'] if z['portfolio_name']==PORTFOLIO}
+            original={z['asset']:z for z in before['positions'] if z['portfolio_name']==PORTFOLIO}
+            self.assertEqual(saved['BTC']['last_price'],140.0)
+            self.assertEqual(saved['BTC']['payload']['price_source_status'],'OK')
+            self.assertEqual(saved['BTC']['payload']['runtime_probe'],'btc')
+            for key,value in original['BTC']['payload'].items():
+                self.assertEqual(saved['BTC']['payload'][key],value,key)
+            self.assertEqual(saved['ETH']['last_price'],150.0)
+            self.assertEqual(saved['ETH']['payload'],original['ETH']['payload'])
+            updates=[q for q,args in trace.statements if q.startswith('WITH delta AS')]
+            self.assertEqual(len(updates),1)
+
     def test_native_scalar_json_string_and_null_mark_semantics_match_frozen_baseline(self):
         self.seed([position()])
         G._quotes['BTC'] = quote()

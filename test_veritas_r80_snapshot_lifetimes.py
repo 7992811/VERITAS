@@ -19,6 +19,8 @@ import veritas_price_source as VPS
 import veritas_position_guard as VPG
 import veritas_thesis_guard as VTG
 import veritas_costs as VC
+import veritas_book_marking as VBM
+import veritas_protective_io as PIO
 
 
 RUNTIME = Path(__file__).with_name('veritas_portfolio_runtime.py')
@@ -33,12 +35,16 @@ def load_r80(name, namespace, *, legacy=False):
         and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
                 and c.func.id == delegate for c in ast.walk(n))))
     if legacy:
-        released = {'positions'} if name == 'step_all' else {'rows', 'z'}
+        released = ({'positions'} if name == 'step_all' else
+                    {'rows','prepared','z','q','identity','payload','guard','patch','candidate'})
         node.body = [n for n in node.body if not (
             isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
             and n.value.value is None and
             {t.id for t in n.targets if isinstance(t, ast.Name)} == released)]
-    ns = {'COMMISSION': .0004, 'VC': VC, 'VPS': VPS, 'json': json, **namespace}
+    ns = {'COMMISSION': .0004, 'VC': VC, 'VPS': VPS, 'VBM': VBM, 'PIO': PIO,
+          'json': json,
+          '_v90j_json': lambda value: value if isinstance(value,dict) else json.loads(value or '{}'),
+          **namespace}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(RUNTIME), 'exec'), ns)
     return ns[name]
 
@@ -107,9 +113,11 @@ class FactoryDatabase:
         if sql.startswith('SELECT * FROM paper_positions'):
             # The cursor stores a factory, never the list returned by fetchall.
             return SimpleNamespace(fetchall=self.rows)
-        if sql.startswith('UPDATE paper_positions') or sql.startswith('UPDATE paper_trades'):
+        if (sql.startswith('UPDATE paper_positions') or sql.startswith('UPDATE paper_trades')
+                or sql.startswith('WITH delta AS') or sql.startswith('WITH incoming AS MATERIALIZED')):
             self.updates.append((sql, parameters))
-            return None
+            return SimpleNamespace(fetchone=lambda: {'position_updates':len(self.assets),
+                                                     'trade_updates':len(self.assets)})
         raise AssertionError('unexpected query: ' + sql)
 
 
@@ -240,7 +248,9 @@ class R80SnapshotLifetimeTests(unittest.TestCase):
             self.assertEqual(summary, original_summary)
             self.assertEqual(candidates, original_candidates)
             self.assertEqual(alive(db.references), 0)
-            self.assertEqual(len(db.updates), 8)  # Same source and thesis writes for both positions.
+            self.assertEqual(len(db.updates), 2)
+            self.assertTrue(db.updates[0][0].startswith('WITH delta AS'))
+            self.assertTrue(db.updates[1][0].startswith('WITH incoming AS MATERIALIZED'))
         self.assertEqual([x[0] for x in observations], [2, 0])
         self.assertEqual(observations[0][1:], observations[1][1:])
 
