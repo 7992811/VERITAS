@@ -374,19 +374,20 @@ def _fresh_post_impulse_targets(row,price,direction):
     except Exception:
         noise=0.0
     items=[]
-    for source in (mtf.get('target_ladder') or [], plan.get('target_ladder') or []):
-        if not isinstance(source,dict):
-            continue
-        target=VPS.positive(source.get('price'))
-        if target is None:
-            continue
-        distance=sign*(target-px)/px
-        if distance<=max(noise,1e-8):
-            continue
-        tfs=source.get('timeframes') or ([source.get('timeframe')] if source.get('timeframe') else [])
-        items.append({'price':float(target),'distance_pct':float(distance),
-                      'timeframes':[str(x) for x in tfs if x],
-                      'origin':'CURRENT_MULTI_TF_STRUCTURE'})
+    for ladder in (mtf.get('target_ladder') or [], plan.get('target_ladder') or []):
+        for source in ladder:
+            if not isinstance(source,dict):
+                continue
+            target=VPS.positive(source.get('price'))
+            if target is None:
+                continue
+            distance=sign*(target-px)/px
+            if distance<=max(noise,1e-8):
+                continue
+            tfs=source.get('timeframes') or ([source.get('timeframe')] if source.get('timeframe') else [])
+            items.append({'price':float(target),'distance_pct':float(distance),
+                          'timeframes':[str(x) for x in tfs if x],
+                          'origin':'CURRENT_MULTI_TF_STRUCTURE'})
     items.sort(key=lambda x:x['distance_pct'])
     dedup=[]
     for item in items:
