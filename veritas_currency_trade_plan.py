@@ -534,6 +534,14 @@ def prepare_entry(row, admission, spec, account, quote, *, now, action=None, hel
                  economics_mode="LIVE", target_execution_policy="SINGLE_TARGET_SEPARATE_CONFIRMATION",
                  expected_hold_seconds=economics["expected_hold_seconds"],
                  entry_context=context, entry_context_json=native_context_json(context), model_version=str(row.get("model_version") or CTC.VERSION),
+                 currency_entry_mode=plan.get("currency_entry_mode"),
+                 currency_role_strength=plan.get("currency_role_strength"),
+                 currency_probability_required=plan.get("currency_probability_required"),
+                 currency_probability_bypass=plan.get("currency_probability_bypass", False),
+                 currency_probability_threshold=plan.get("currency_probability_threshold"),
+                 currency_strong_threshold=plan.get("currency_strong_threshold"),
+                 currency_independent_evidence=plan.get("currency_independent_evidence"),
+                 currency_min_independent=plan.get("currency_min_independent"),
                  source_identity=source, broker_execution_source="TINVEST_EXACT_INSTRUMENT", reduce_only=False)
     return json_safe(terms)
 
