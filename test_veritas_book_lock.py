@@ -119,6 +119,28 @@ class PriorityLockTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(lock.snapshot()['protective_reservations'], 0)
 
+    def test_protective_preclaim_expires_if_preparing_worker_disappears(self):
+        lock = PriorityRLock()
+        ready = threading.Event()
+        def prepare_only():
+            lock.reserve_protective_turn(.05)
+            ready.set()
+        thread = threading.Thread(target=prepare_only)
+        thread.start(); thread.join(2)
+        self.assertTrue(ready.is_set())
+        self.assertEqual(lock.snapshot()['protective_reservations'], 1)
+        threading.Event().wait(.08)
+        result=[]
+        def ordinary():
+            acquired=lock.acquire(blocking=False)
+            result.append(acquired)
+            if acquired:
+                lock.release()
+        thread=threading.Thread(target=ordinary)
+        thread.start(); thread.join(2)
+        self.assertEqual(result,[True])
+        self.assertEqual(lock.snapshot()['protective_reservations'],0)
+
     def test_protective_preclaim_never_interrupts_current_owner_reentry(self):
         lock = PriorityRLock()
         lock.acquire()
