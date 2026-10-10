@@ -191,13 +191,16 @@ class BookMarkingTests(unittest.TestCase):
         self.assertEqual(self.result(bad), self.result(project(bad)))
         self.assertNotEqual(self.result(valid), self.result(bad))
 
-    def test_two_nav_reads_follow_mutations_and_keep_full_funding_management_reads(self):
+    def test_nav_reads_reload_only_after_position_or_order_mutations(self):
         base = next(n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name == '_step_one')
         calls = sorted((n for n in ast.walk(base) if isinstance(n, ast.Call)
                         and isinstance(n.func, ast.Name) and n.func.id == '_portfolio_rows'),
                        key=lambda n: n.lineno)
+        # Funding changes only ledger totals, so the initial locked snapshot is
+        # advanced locally. Fresh projected reads are retained only after an
+        # actual close/reduce or add mutation.
         self.assertEqual([[(k.arg, ast.literal_eval(k.value)) for k in n.keywords] for n in calls],
-                         [[], [], [('mark_only', True)], [('mark_only', True)]])
+                         [[], [('mark_only', True)], [('mark_only', True)]])
         c = MemoryConnection([position()])
         before = H._portfolio_rows(c, PORTFOLIO, mark_only=True)
         c.account.update(realized_pnl_rub=37., fees_rub=17., funding_rub=11.)
