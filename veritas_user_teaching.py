@@ -25,6 +25,22 @@ ACCELERATION_SOURCE_TIMESTAMP = "2026-10-09T08:41:00Z"
 TREND_DAY_TEACHING_ID = "USER_TREND_DAY_EFFICIENCY_2026_10_09"
 TREND_DAY_SOURCE_TIMESTAMP = "2026-10-09T11:31:00Z"
 TREND_DAY_USER_AUTHORIZATION_RU = "Продолжай"
+EVENT_IMPULSE_TEACHING_ID = "USER_EVENT_IMPULSE_MAX_CAPTURE_2026_10_10"
+EVENT_IMPULSE_SOURCE_TIMESTAMP = "2026-10-10T06:59:00Z"
+EVENT_IMPULSE_USER_CORRECTION_RU = (
+    "Вчерашняя ситуация с отработкой импульса крайне плохая и критична для VERITAS. "
+    "При резком импульсе с пробоем предыдущих локальных максимумов на объёмах и "
+    "скачком волатильности выше предыдущих уровней и старших таймфреймов система "
+    "должна сразу распознать событийный режим, взять LONG на подтверждённом пробое "
+    "и по подтверждениям увеличить прибыльную позицию до максимально разрешённого "
+    "портфелем размера. Новости нужно искать после ценового события: подтверждённый "
+    "катализатор усиливает удержание и добор, но ожидание новости не должно задерживать "
+    "первый вход. Пока мощный импульс продолжается, фиксированный тейк-профит не "
+    "исполняется; цели становятся ориентирами по максимумам и зонам старших "
+    "таймфреймов, а переоценка тейков выполняется только после структурного затухания "
+    "импульса. Эти правила имеют наивысший приоритет как обучение от владельца и "
+    "не требуют дополнительного доказательства."
+)
 OBSERVATION_INTEGRITY_TEACHING_ID = "USER_OBSERVATION_INTEGRITY_2026_10_09"
 OBSERVATION_INTEGRITY_SOURCE_TIMESTAMP = "2026-10-09T00:00:00Z"
 OBSERVATION_INTEGRITY_USER_CORRECTION_RU = (
@@ -336,6 +352,66 @@ def runtime_consistency():
     return {"status":"OK" if not errors else "CONFLICT","errors":errors}
 
 
+def event_impulse_policy_snapshot():
+    """Highest-priority owner rule for volatility-shock/event-trend execution."""
+    policy=_copy(CTC.TREND_ACCELERATION_POLICY)
+    event_impulse=_copy(policy.get("event_impulse") or {})
+    return {
+        "teaching_id":EVENT_IMPULSE_TEACHING_ID,
+        "source_type":"USER_AUTHORED_P0_CANONICAL_POLICY",
+        "source_timestamp":EVENT_IMPULSE_SOURCE_TIMESTAMP,
+        "source_timestamp_precision":"MINUTE",
+        "source_text_ru":EVENT_IMPULSE_USER_CORRECTION_RU,
+        "status":"ACTIVE_OWNER_P0_CANONICAL",
+        "priority":"P0_HIGHEST",
+        "parent_teaching_id":TREND_DAY_TEACHING_ID,
+        "ctc_version":CTC.VERSION,
+        "runtime_authority":CTC.BASIS_RUNTIME,
+        "scope":"PAPER_NON_CURRENCY_PORTFOLIOS",
+        "portfolios":["Impulse","Aggressive","Champion","Challenger"],
+        "execution_policy":event_impulse,
+        "requirements":{
+            "entry":(
+                "Price/structure/activity volatility shock authorizes the first "
+                "trade before the causal headline is known."
+            ),
+            "scale":(
+                "Distinct same-direction confirmations scale a winning position "
+                "toward the portfolio maximum, always subject to stop-risk and "
+                "hard portfolio risk limits."
+            ),
+            "news":(
+                "Search for a catalyst immediately after the shock. News confirms "
+                "hold/scale conviction and never delays the first structural entry."
+            ),
+            "take_profit":(
+                "While event impulse/trend hold is active, fixed take-profit is "
+                "deferred. Higher-timeframe highs/zones are references, not forced "
+                "exits; targets are reassessed only after structural exhaustion."
+            ),
+            "exit":(
+                "Structural break, confirmed reversal, trailing stop or hard risk "
+                "may exit an active event impulse."
+            ),
+            "learning":"This owner-authored invariant has highest priority and requires no additional proof.",
+        },
+        "parameter_validation":{
+            "status":"OWNER_P0_CANONICAL_NO_ADDITIONAL_PROOF",
+            "additional_proof_required":False,
+            "ml_training_performed":False,
+            "validated_profitability":False,
+        },
+        "case_anchor":{
+            "asset":"MOEX","date":"2026-10-09","timezone":"Europe/Moscow",
+            "owner_expected_entry_time":"21:46",
+            "failure_class":"CORRECT_DIRECTION_MISSED_EXECUTION_EVENT_IMPULSE",
+        },
+        "storage":{"table":"ledger_events","event_type":EVENT_TYPE,
+                   "entity_key":EVENT_IMPULSE_TEACHING_ID,
+                   "event_key":EVENT_TYPE+":"+EVENT_IMPULSE_TEACHING_ID},
+    }
+
+
 def observation_integrity_policy_snapshot():
     return {
         "teaching_id":OBSERVATION_INTEGRITY_TEACHING_ID,
@@ -367,7 +443,8 @@ def seed_all_user_teachings(pg_event, read_event=None):
     return [seed_user_teaching(pg_event, read_event, snapshot=payload)
             for payload in (policy_snapshot(), ma_policy_snapshot(),
                             breakout_policy_snapshot(), acceleration_policy_snapshot(),
-                            trend_day_efficiency_snapshot(), observation_integrity_policy_snapshot())]
+                            trend_day_efficiency_snapshot(), event_impulse_policy_snapshot(),
+                            observation_integrity_policy_snapshot())]
 
 
 def seed_user_teaching(pg_event, read_event=None, *, snapshot=None):
