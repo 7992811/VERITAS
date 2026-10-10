@@ -23,6 +23,91 @@ def _num(*values):
     return None
 
 
+
+def event_impulse_assess(row, direction):
+    """Owner-P0 event impulse classifier used by execution, not just analytics.
+
+    Price/structure/activity authorizes the impulse before a headline is known.
+    News is a hold/scale confirmation, never a prerequisite for the first entry.
+    """
+    cfg=((getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('event_impulse') or {})
+    row=row or {}
+    out={'eligible':False,'reason':'EVENT_IMPULSE_NOT_CONFIRMED',
+         'owner_priority':cfg.get('owner_priority')}
+    if not cfg.get('enabled') or direction not in ('LONG','SHORT'):
+        return out
+    plan=row.get('trade_plan') or {}
+    integrity=plan.get('trade_integrity') or {}
+    if integrity.get('hard_invalidation'):
+        # Data/session vetoes are not thesis invalidations in the canonical
+        # signal path; genuine thesis invalidation remains an absolute block.
+        return dict(out,reason='EVENT_IMPULSE_THESIS_INVALID')
+    regime=str(row.get('regime') or '')
+    if regime not in set(cfg.get('accepted_regimes') or ()):
+        return dict(out,reason='EVENT_IMPULSE_HIGH_VOL_REGIME_REQUIRED',regime=regime)
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    direction_tiers=(('LONG','SUPER_LONG') if direction=='LONG' else ('SHORT','SUPER_SHORT'))
+    if tier not in direction_tiers or tier not in set(cfg.get('accepted_fast_tiers') or ()):
+        return dict(out,reason='EVENT_IMPULSE_DIRECTIONAL_SIGNAL_REQUIRED',signal_tier=tier)
+    hs=row.get('horizon_structure') or {}
+    hs_direction=str(hs.get('direction') or row.get('horizon_structure_direction') or '')
+    score=_num(hs.get('score'),row.get('horizon_structure_score'),0.0) or 0.0
+    if hs_direction not in ('',direction) or score<float(cfg.get('minimum_structure_score') or .90):
+        return dict(out,reason='EVENT_IMPULSE_STRUCTURE_REQUIRED',
+                    structure_direction=hs_direction,structure_score=score)
+    inst=row.get('institutional_signal') or {}
+    try:
+        evidence=int(row.get('independent_evidence_families')
+                     or ((inst.get('evidence_independence') or {}).get('independent_count'))
+                     or 0)
+    except Exception:
+        evidence=0
+    if evidence<int(cfg.get('minimum_independent_evidence') or 4):
+        return dict(out,reason='EVENT_IMPULSE_EVIDENCE_INSUFFICIENT',evidence=evidence)
+    context=(row.get('timeframe_entry_context')
+             or plan.get('timeframe_entry_context')
+             or row.get('trend_entry_context')
+             or plan.get('trend_entry_context') or {})
+    event=context.get('event') or {}
+    event_direction=str(event.get('direction') or '')
+    event_type=str(event.get('event_type') or '')
+    breakout=bool(event_direction==direction and
+                  ('BREAKOUT' in event_type or 'CONTINUATION' in event_type))
+    if cfg.get('breakout_required') and not breakout:
+        return dict(out,reason='EVENT_IMPULSE_BREAKOUT_REQUIRED',
+                    event_type=event_type,event_direction=event_direction)
+    st=row.get('intraday_structure') or {}
+    ti=row.get('trend_impulse') or {}
+    relvol=_num(st.get('relative_volume'),ti.get('relative_volume'),row.get('relative_volume'))
+    activity=bool(st.get('volume_confirmed') or st.get('activity_confirmed')
+                  or ti.get('volume_confirmed') or ti.get('activity_confirmed'))
+    if relvol is not None and relvol>=float(cfg.get('relative_volume_floor_if_available') or 1.25):
+        activity=True
+    if cfg.get('activity_or_volume_confirmation_required') and not activity:
+        return dict(out,reason='EVENT_IMPULSE_ACTIVITY_CONFIRMATION_REQUIRED',
+                    relative_volume=relvol)
+    volatility=bool('HIGH_VOL' in regime or ti.get('volatility_expansion')
+                    or st.get('volatility_expansion'))
+    if cfg.get('volatility_expansion_required') and not volatility:
+        return dict(out,reason='EVENT_IMPULSE_VOLATILITY_EXPANSION_REQUIRED')
+    event_score=abs(_num(row.get('event_shadow_score'),0.0) or 0.0)
+    news_confirmed=bool(row.get('news_catalyst_confirmed')
+                        or row.get('event_news_confirmation')
+                        or event_score>=0.65)
+    return {
+        'eligible':True,'reason':'EVENT_IMPULSE_CONFIRMED',
+        'owner_priority':cfg.get('owner_priority'),'direction':direction,
+        'regime':regime,'signal_tier':tier,'structure_score':score,
+        'evidence':evidence,'breakout':breakout,'activity_confirmed':activity,
+        'relative_volume':relvol,'volatility_expansion':volatility,
+        'news_confirmed':news_confirmed,'event_shadow_score':event_score,
+        'entry_requires_news':bool(cfg.get('entry_requires_news',False)),
+        'defer_fixed_take_profit':bool(cfg.get('defer_fixed_take_profit',True)),
+        'target_reference_mode':cfg.get('target_reference_mode'),
+        'event_id':event.get('event_id'),'event_type':event_type,
+    }
+
+
 def assess(row,direction,policy,*,mid=False,senior=False,evidence=None,
            expected=None,progress=None):
     cfg=getattr(CTC,'TREND_DAY_EFFICIENCY_POLICY',{}) or {}
