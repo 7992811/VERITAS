@@ -777,16 +777,19 @@ class TBankTradingAdapter:
             task = state["task_id"]
             items, count, pages = [], None, None
             try:
-                for page in range(max_pages):
+                for page_index in range(max_pages):
+                    # T-Bank REST schema defines request.page as 1-based, while
+                    # response.page is documented as 0-based.
+                    request_page = page_index + 1
                     raw = self._request("broker_report", {"getBrokerReportRequest":{
-                        "taskId":task, "page":page}})
+                        "taskId":task, "page":request_page}})
                     data = raw.get("getBrokerReportResponse")
                     if not isinstance(data, dict) or data.get("taskId", task) != task:
                         raise TradingError("BROKER_REPORT_IDENTITY_MISMATCH")
                     n, p = data.get("itemsCount", 0), data.get("pagesCount", 0)
                     current, batch = data.get("page", 0), data.get("brokerReport", [])
                     if (type(n) is not int or type(p) is not int or type(current) is not int
-                            or n < 0 or p < 0 or current != page or not isinstance(batch, list)
+                            or n < 0 or p < 0 or current != page_index or not isinstance(batch, list)
                             or any(not isinstance(x, dict) for x in batch)):
                         raise TradingError("INVALID_BROKER_REPORT_RESPONSE")
                     if count is not None and (n != count or p != pages):
@@ -803,7 +806,7 @@ class TBankTradingAdapter:
                         with self._lock:
                             self._broker_report_recovery_tasks[key]["report"] = report
                         break
-                    if not batch or page + 1 >= max(1, pages):
+                    if not batch:
                         raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
                 if report is None:
                     raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
