@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 import inspect
+import os
+import uuid
 import unittest
 
 import veritas_learning_v2 as L2
@@ -159,6 +161,46 @@ class LearningV2RegistryTests(unittest.TestCase):
         source=inspect.getsource(R.sync)
         self.assertIn("WHERE version=%s AND asset=%s",source)
         self.assertIn("learning_v2_registry_asset_status",inspect.getsource(R.ensure_schema))
+
+    def test_sync_batches_registration_and_prospective_updates(self):
+        source=inspect.getsource(R.sync)
+        self.assertGreaterEqual(source.count("jsonb_to_recordset"),2)
+        self.assertIn("INSERT INTO learning_v2_registry",source)
+        self.assertIn("UPDATE learning_v2_registry AS r",source)
+        self.assertIn("ON CONFLICT(candidate_id) DO NOTHING",source)
+        self.assertNotIn('c.execute("""UPDATE learning_v2_registry SET status=%s',source)
+
+    def test_batch_sync_executes_on_real_postgres_and_is_idempotent(self):
+        dsn=os.getenv("VERITAS_QUALITY_TEST_DSN")
+        if not dsn:
+            self.skipTest("VERITAS_QUALITY_TEST_DSN not configured")
+        import psycopg
+        from psycopg import sql
+        from psycopg.rows import dict_row
+        schema="l2_batch_"+uuid.uuid4().hex
+        with psycopg.connect(dsn,row_factory=dict_row) as conn:
+            with conn.transaction():
+                conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+                conn.execute(sql.SQL("SET LOCAL search_path TO {}").format(sql.Identifier(schema)))
+                R.ensure_schema(conn)
+                scope={"asset":"NQ","horizon":"5m","regime":"TREND",
+                       "policy_hash":"p","source_key":"S","contract_id":"C1"}
+                hypotheses=[
+                    L2._hypothesis("ENTRY_BLOCKER_RELAXATION",scope,
+                                   {"blocker":"IMPULSE_ALREADY_PASSED"},{"n":24}),
+                    L2._hypothesis("STOP_GEOMETRY",scope,
+                                   {"stop_buffer_atr":.20,"baseline_stop_buffer_atr":.15},{"outcome_n":20}),
+                ]
+                snapshot={"asset":"NQ","hypotheses":hypotheses}
+                first=R.sync(conn,snapshot,[],[],now=T0)
+                second=R.sync(conn,snapshot,[],[],now=T0+timedelta(minutes=1))
+                rows=conn.execute("SELECT candidate_id,status FROM learning_v2_registry ORDER BY candidate_id").fetchall()
+                self.assertEqual(len(rows),2)
+                self.assertEqual(first["registered"],2)
+                self.assertEqual(second["registered"],2)
+                self.assertEqual(first["evaluated"],2)
+                self.assertEqual(second["evaluated"],2)
+                self.assertEqual({r["status"] for r in rows},{"COLLECTING","AWAIT_REPLAY"})
 
     def test_hypothesis_id_is_stable_when_training_evidence_grows(self):
         scope={"asset":"NQ","horizon":"5m","regime":"TREND","policy_hash":"p"}
