@@ -43,6 +43,11 @@ WORK_VERSION = "AMI_STAGED_INPUTS_V1"
 WORK_SLOT = "intelligence_scorecard_work"
 WORK_BYTES = 196608
 DECISION_CHUNK = 64
+# Production AMI sampling is the only history read allowed a slightly longer
+# statement timeout. The maintenance turn itself remains bounded and all later
+# scorecard stages keep the ordinary 2s SQL ceiling.
+SAMPLE_SQL_TIMEOUT_MS = 4500
+SAMPLE_SQL_RESERVE_SECONDS = 3.0
 
 
 def _knowledge_applied(ns, episode):
@@ -165,7 +170,26 @@ def refresh_snapshot(ns, pg_connect, learning_progress, production_epoch, *, con
                     or (work.get("stage") == "complete" and work.get("next_refresh_at", 0) <= now)
                     or now-float(work.get("started_at", 0)) > 1800):
                 active_stage = "sample"
+                # The production ledger has grown enough that the exact 2,200
+                # joined-row freeze can legitimately exceed the generic 2s SQL
+                # ceiling. Give only this read extra headroom, and only when the
+                # maintenance lane still has enough time left for the durable
+                # checkpoint. Tests/direct callers with a smaller explicit SQL
+                # timeout keep their requested bound.
+                lane = getattr(context, "lane", None)
+                if lane is not None and c.sql_timeout_ms >= 2000:
+                    sample_budget = max(0.0, remaining() - SAMPLE_SQL_RESERVE_SECONDS)
+                    sample_timeout = min(SAMPLE_SQL_TIMEOUT_MS, int(sample_budget * 1000))
+                    if sample_timeout > c.sql_timeout_ms:
+                        c.execute("SET LOCAL statement_timeout = '"+str(sample_timeout)+"ms'")
+                        c.sql_timeout_ms = sample_timeout
                 sample = ami_decision_sample(c)
+                # Return the transaction to the ordinary SQL ceiling before
+                # writing the durable work checkpoint.
+                normal_timeout = max(1, min(2000, int(getattr(context, "sql_timeout_ms", 2000))))
+                if c.sql_timeout_ms != normal_timeout:
+                    c.execute("SET LOCAL statement_timeout = '"+str(normal_timeout)+"ms'")
+                    c.sql_timeout_ms = normal_timeout
                 # The original reducer does this stable sort; ties retain their
                 # original selected order, even when they span chunk boundaries.
                 sample.sort(key=lambda row: str(row.get("event_ts") or ""))
