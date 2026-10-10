@@ -72,6 +72,18 @@ class CausalQuoteBreakoutTests(unittest.TestCase):
         self.assertEqual(event["confirmation"], "VERIFIED_QUOTE_CROSS")
         self.assertLess(event["stop_price"], event["stop_anchor"])
 
+    def test_intrabar_senior_break_is_game_changer_before_forming_bar_close(self):
+        raw, at = raw_at(price=101.0)
+        context = self.build(raw, at, horizon="1m")
+        event = context["event"]
+        self.assertEqual(event["confirmation"], "VERIFIED_QUOTE_CROSS")
+        self.assertEqual(event["trigger_timeframe"], "1h")
+        self.assertTrue(event["senior_level_break"], event)
+        self.assertEqual(event["intrabar_volatility_shock"]["severity"], "GAME_CHANGER_EXTREME")
+        self.assertTrue(event["game_changer_extreme"], event)
+        self.assertLess(context["closed_at"], event["signal_at"])
+        self.assertEqual(event["signal_at"], at.timestamp())
+
     def test_pivot_confirmed_at_this_boundary_is_available_immediately(self):
         raw, at = raw_at()
         context = self.build(raw, at)
