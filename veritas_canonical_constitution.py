@@ -28,6 +28,23 @@ STRATEGY_ROLE_POLICY = {
                  "game_changer_probability_bypass":True},
 }
 
+# Currency uses the owner event-impulse classifier only as an early structural
+# entry classification. It does NOT inherit paper-only temporary leverage caps,
+# trend-day runner expansion, profit-protection overrides, or dynamic-TP state.
+# All sizing remains owned by the Currency portfolio/risk governor.
+CURRENCY_EVENT_IMPULSE_POLICY = {
+    "version":"CURRENCY_EVENT_IMPULSE_BRIDGE_V1",
+    "enabled":True,
+    "scope":"CURRENCY_CNYRUBF_ENTRY_CLASSIFICATION_ONLY",
+    "allow_probability_bypass":True,
+    "allow_immediate_structural_entry":True,
+    "allow_temporary_cap_expansion":False,
+    "allow_trend_day_runner_override":False,
+    "allow_profit_protection_override":False,
+    "allow_dynamic_tp_override":False,
+    "risk_authority":"currency_live_risk_policy",
+}
+
 # Explicit owner correction, 2026-10-06. These are operational safeguards;
 # numeric defaults are not an empirically validated trading edge.
 STRUCTURAL_ENTRY_POLICY = {
