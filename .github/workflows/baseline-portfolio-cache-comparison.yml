@@ -1,0 +1,17 @@
+name: Baseline Portfolio Cache Comparison
+on:
+  push:
+    branches: [ "ci/baseline-portfolio-cache-40c64b1" ]
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - run: pip install -r requirements-intelligence.txt
+      - run: python -m unittest -v test_veritas_accounting_io.py test_veritas_portfolio_cycle.py test_veritas_r46_snapshot_borrowing.py test_veritas_book_marking.py
