@@ -15,6 +15,7 @@ import veritas_strategy_roles as VROLE
 import veritas_timeframe_policy as TFP
 import veritas_stop_risk as VSR
 import veritas_admission_trace as VAT
+import veritas_trend_day_efficiency as VTDE
 
 VERSION=CTC.BASIS_RUNTIME
 TRIGGER_HORIZONS=("1m","5m","1h","4h")
@@ -222,7 +223,37 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
                 "execution_timing":chase,"trend_event":event,"canonical_stage":"TIMING"}
 
     p["_row"]=work
+    game_changer=VTDE.event_impulse_assess(work,d)
     full_fraction,rg=_fraction(p,drawdown,soft=False)
+    # Owner P0: verified quote + senior structural break + forming move above
+    # completed multi-timeframe volatility is already the confirmation. In
+    # NORMAL risk state the first request goes directly to the portfolio's
+    # temporary event-impulse maximum; stop-risk and final economics still cap
+    # the actual executable fraction. CAUTION/DEFENSE/HARD_STOP never get
+    # widened by this rule.
+    if game_changer.get('eligible') and game_changer.get('immediate_max') and rg.get('state')=='NORMAL':
+        cfg=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('event_impulse') or {}
+        caps=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('temporary_caps') or {}
+        mode=str(p.get('mode') or '')
+        cap=dict(caps.get(mode) or {})
+        temporary=float(cap.get('max_fraction')
+                        or p.get('max_fraction')
+                        or p.get('max_single_asset_fraction')
+                        or full_fraction)
+        full_fraction=max(float(full_fraction),temporary)
+        p['max_fraction']=max(float(p.get('max_fraction',p.get('max_single_asset_fraction',0.0)) or 0.0),temporary)
+        p['max_single_asset_fraction']=p['max_fraction']
+        if cap.get('max_gross') is not None:
+            p['max_gross']=max(float(p.get('max_gross') or 0.0),float(cap['max_gross']))
+        work['_event_impulse']=dict(game_changer)
+        work['_trend_acceleration']={
+            'active':True,'stage':'GAME_CHANGER_MAX_IMMEDIATE',
+            'target_fraction':full_fraction,
+            'temporary_max_fraction':p['max_fraction'],
+            'temporary_max_gross':p.get('max_gross'),
+            'event_impulse':dict(game_changer),
+            'reason':'OWNER_P0_GAME_CHANGER_INITIAL_MAX',
+        }
     if full_fraction<=0:
         return {"open":False,"fraction":0.0,"reason":"PORTFOLIO_HARD_DRAWDOWN_STOP","hard_veto":True,
                 "risk_governor":rg,"canonical_stage":"RISK"}
@@ -247,9 +278,11 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
         return {"open":False,"fraction":0.0,"reason":stop_budget["reason"],"hard_veto":True,
                 "economics":economics,"risk_governor":rg,"stop_risk_budget":stop_budget,
                 "canonical_stage":"RISK"}
-    return {"open":True,"fraction":fraction,"reason":"CANONICAL_SIGNAL_PROBE" if soft else "CANONICAL_SIGNAL_ENTRY",
+    return {"open":True,"fraction":fraction,
+            "reason":"CANONICAL_GAME_CHANGER_ENTRY" if game_changer.get('immediate_max') else ("CANONICAL_SIGNAL_PROBE" if soft else "CANONICAL_SIGNAL_ENTRY"),
             "hard_veto":False,"soft_blockers":list(dict.fromkeys(soft)),"economics":economics,
             "risk_governor":rg,"stop_risk_budget":stop_budget,
+            "event_impulse":game_changer if game_changer.get('eligible') else None,
             "trend_event":event,"execution_timing":chase,
             "canonical_stage":"SIZE","canonical_policy_version":CTC.VERSION,
             "prepared_plan":dict(plan),"structural_policy_version":plan.get('structural_policy_version')}
