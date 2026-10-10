@@ -95,6 +95,16 @@ class LearningV2RuntimeTests(unittest.TestCase):
         self.assertIn("AS stop_replay_ready",source)
         self.assertIn("AS exit_replay_ready",source)
 
+    def test_trade_payload_read_is_bounded_after_episode_dedup(self):
+        source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
+        self.assertIn("episode_pool AS MATERIALIZED",source)
+        self.assertIn("recent_ideas AS MATERIALIZED",source)
+        self.assertIn("WHERE idea_rank=1",source)
+        self.assertIn("LIMIT %s",source)
+        self.assertIn("FROM recent_ideas e",source)
+        self.assertIn("JOIN paper_trades t ON t.trade_id=e.trade_id",source)
+        self.assertLess(source.index("FROM recent_ideas e"),source.index("JOIN paper_trades t ON t.trade_id=e.trade_id"))
+
     def test_trade_cohort_provenance_comes_from_original_trade(self):
         source=inspect.getsource(C.ContinuousLearning.learning_v2_shadow)
         self.assertIn("JOIN paper_trades t ON t.trade_id=e.trade_id",source)
