@@ -851,7 +851,17 @@ class TradeHttpApplication:
                     "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
                     "robot_autotrade_enabled": self.robot_autotrade_enabled,
                     "block_reason": "CURRENCY_ACCOUNT_NOT_BOUND"}
-        self._schedule_reconcile()
+        initial_unsettled = self._unsettled()
+        if initial_unsettled:
+            self._schedule_reconcile()
+        else:
+            # Do not spin a broker reconciliation thread on every signal poll
+            # when durable execution state is already clean. This keeps poll
+            # bounded/read-mostly and lets reconciliation_inflight return false.
+            with self._reconcile_state_lock:
+                if not self._reconcile_inflight:
+                    self._reconcile_last_error = None
+                    self._reconcile_last_results = []
         if callable(getattr(self, "console_binding", None)) and self.console_binding().get("paused", True):
             self._remember_poll("PROPOSALS_PAUSED", binding_state="bound")
             return {"ok": True, "enabled": True, "items": [], "execution_enabled": False,
