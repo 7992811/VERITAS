@@ -129,7 +129,6 @@ def _independent_episodes(rows, limit=360, previous=None):
         })
     return out[-int(limit):]
 
-
 def _decision_metrics(episodes, decision_key="decision"):
     directional = hits = large = captured = wrong = no_trade = missed = 0
     utility = []
@@ -166,11 +165,9 @@ def _decision_metrics(episodes, decision_key="decision"):
         "no_trade_miss_rate": missed / no_trade if no_trade else None,
     }
 
-
 def _query_decision_episodes(c):
     rows = ami_decision_rows(c)
     return _independent_episodes([dict(r) for r in rows or []], 360)
-
 
 def _query_fresh_portfolio(c, epoch):
     r = c.execute("""
@@ -210,7 +207,6 @@ def _query_fresh_portfolio(c, epoch):
         "profit_factor": (gw / gl) if gl > 1e-9 else (9.99 if gw > 0 else None),
         "max_drawdown": float(dd.get("dd") or 0.0),
     }
-
 
 def _query_learning(c):
     rows = c.execute("""
@@ -260,7 +256,6 @@ def _query_learning(c):
         "early_realization": avg_real(early), "recent_realization": avg_real(recent),
     }
 
-
 def _query_knowledge(c, episodes):
     totals = c.execute("""
       SELECT
@@ -300,7 +295,6 @@ def _query_knowledge(c, episodes):
         "applied_utility": met.get("avg_normalized_utility"),
     }
 
-
 def _baseline(c, score, components, component_status):
     key = "asset_management_intelligence_v1_rollout"
     try:
@@ -330,7 +324,6 @@ def _baseline(c, score, components, component_status):
         }
     except Exception:
         return {"score": None, "components": {}, "captured_at": None, "version": None}
-
 
 def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, cache_seconds=55, publish=True, inputs=None):
     now = time.time()
@@ -515,21 +508,17 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
         _publish_cache(value, production_epoch, time.time())
     return dict(value)
 
-
 def _publish_cache(value, epoch, observed_at):
     from veritas_scorecard_delivery import publish_cache
     return publish_cache(globals(), value, epoch, observed_at)
-
 
 def cached_scorecard(production_epoch, max_age_seconds=120):
     from veritas_scorecard_delivery import cached_scorecard
     return cached_scorecard(globals(), production_epoch, max_age_seconds)
 
-
 def refresh_snapshot(pg_connect, learning_progress, production_epoch, *, context=None, cursor=None):
     from veritas_scorecard_delivery import refresh_snapshot
     return refresh_snapshot(globals(), pg_connect, learning_progress, production_epoch, context=context, cursor=cursor)
-
 
 def build_scorecard(pg_connect, learning_progress, production_epoch, cache_seconds=55):
     # Startup and concurrent dashboard readers share one computation. The cache
@@ -537,7 +526,6 @@ def build_scorecard(pg_connect, learning_progress, production_epoch, cache_secon
     with _BUILD_LOCK:
         return _build_scorecard_unlocked(
             pg_connect, learning_progress, production_epoch, cache_seconds)
-
 
 def startup_snapshot(pg_connect, learning_progress, production_epoch, delay_seconds=12):
     from veritas_scorecard_delivery import startup_snapshot
