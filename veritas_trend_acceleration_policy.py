@@ -2,7 +2,7 @@
 
 Kept outside the frozen canonical constitution line ceiling while remaining
 imported by that constitution as its single runtime authority. Numerical stage
-sizes require replay/OOS validation; live Currency semantics are excluded.
+sizes require replay/OOS validation. Ordinary trend acceleration excludes Currency;\nonly the owner-approved event-impulse/game-changer path is shared with Currency.
 """
 
 TREND_ACCELERATION_POLICY = {
@@ -35,6 +35,7 @@ TREND_ACCELERATION_POLICY = {
         "CORE": {"max_fraction": 1.00, "max_gross": 2.00},
         "CHALLENGER": {"max_fraction": 1.00, "max_gross": 2.00},
         "AGGRESSIVE": {"max_fraction": 5.00, "max_gross": 5.00},
+        "CURRENCY": {"max_fraction": 10.00, "max_gross": 10.00},
     },
     "event_impulse": {
         "enabled": True,
@@ -42,7 +43,14 @@ TREND_ACCELERATION_POLICY = {
         "owner_rule_authority": True,
         "additional_proof_required": False,
         "entry_requires_news": False,
-        "news_confirmation_role": "HOLD_AND_SCALE_CONFIRMATION",
+        "news_confirmation_role": "HOLD_SCALE_AND_REVERSAL_RISK_CONFIRMATION",
+        "news_check_on_shock": True,
+        "news_check_non_blocking": True,
+        "news_conflict_suppresses_immediate_max": True,
+        "game_changer_immediate_max": True,
+        "game_changer_requires_senior_level_break": True,
+        "game_changer_requires_move_above_completed_1h_volatility": True,
+        "forming_bar_close_required": False,
         "accepted_regimes": ("UPTREND_HIGH_VOL", "DOWNTREND_HIGH_VOL"),
         "accepted_fast_tiers": ("LONG", "SUPER_LONG", "SHORT", "SUPER_SHORT"),
         "minimum_structure_score": 0.90,
@@ -53,8 +61,11 @@ TREND_ACCELERATION_POLICY = {
         "relative_volume_floor_if_available": 1.25,
         "fast_target_standard": 0.50,
         "fast_target_aggressive": 1.50,
+        "fast_target_currency": 1.00,
+        "mid_target_currency": 5.00,
         "confirmed_target_standard": 1.00,
         "confirmed_target_aggressive": 5.00,
+        "confirmed_target_currency": 10.00,
         "defer_fixed_take_profit": True,
         "target_reference_mode": "HIGHER_TIMEFRAME_HIGHS_AND_ZONES",
         "reassess_targets_after_impulse_exhaustion": True,
@@ -63,11 +74,12 @@ TREND_ACCELERATION_POLICY = {
             "RISK_HARD_STOP", "PORTFOLIO_HARD_STOP",
         ),
         "principle": (
-            "A sharp high-volume/activity breakout with volatility expansion is "
-            "an event impulse even before the catalyst headline is identified. "
-            "Enter on the verified price/structure event, scale as independent "
-            "confirmations arrive, use news to strengthen hold conviction, and "
-            "do not execute a fixed take-profit while the impulse remains active."
+            "A verified senior structural break whose forming move exceeds completed "
+            "multi-timeframe volatility is a GAME_CHANGER_EXTREME. Do not wait for "
+            "bar close, SUPER signal, or news: request the maximum exposure allowed "
+            "by the portfolio and stop-risk. Search news immediately in parallel; "
+            "aligned news strengthens hold/scale, explicit opposite news suppresses "
+            "emergency max sizing. Fixed take-profit stays deferred while structure holds."
         ),
     },
     "profit_protection": {
