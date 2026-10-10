@@ -14,12 +14,19 @@ import json
 import os
 from pathlib import Path
 import sys
+# Import these synchronously before any bootstrap thread exists. Python 3.14
+# can otherwise expose partially initialized typing/dataclasses modules when
+# sitecustomize starts a worker while the main entrypoint imports traceback.
+import typing as _typing
+import dataclasses as _dataclasses
+import traceback as _traceback
 import threading
 import time
 
 _ENABLED = {"1","true","yes","on"}
 _stop = threading.Event()
 _started = False
+_start_requested = False
 _lock = threading.Lock()
 
 
@@ -72,8 +79,13 @@ def _bootstrap() -> None:
 
 
 def start() -> bool:
+    global _start_requested
     if not should_start():
         return False
+    with _lock:
+        if _start_requested:
+            return True
+        _start_requested = True
     thread = threading.Thread(target=_bootstrap,
                               daemon=True,
                               name="veritas-embedded-signal-robot-bootstrap")
