@@ -295,8 +295,8 @@ class TrendDayRunnerTests(unittest.TestCase):
             {"r_accel_mfe_profit_lock_active":True,"last_trend_day_efficiency":td}),0.50)
 
 
-def moex_event_impulse_row(*, mid=False, supporting=None, news=False):
-    row=trend_row(state="BUILDING_TREND",horizon="5m",tier="SUPER_LONG",
+def moex_event_impulse_row(*, mid=False, supporting=None, news=False, tier="SUPER_LONG"):
+    row=trend_row(state="BUILDING_TREND",horizon="5m",tier=tier,
                   evidence=5,expected=0.00189,supporting=supporting,mid=mid)
     row.update({
         "asset":"MOEX","price":2341.20,"regime":"UPTREND_HIGH_VOL",
@@ -329,6 +329,12 @@ def moex_event_impulse_row(*, mid=False, supporting=None, news=False):
 
 
 class EventImpulseP0Tests(unittest.TestCase):
+    def test_first_directional_long_can_enter_before_super_confirmation(self):
+        row=moex_event_impulse_row(tier="LONG")
+        impulse=VTDE.event_impulse_assess(row,"LONG")
+        self.assertTrue(impulse["eligible"],impulse)
+        self.assertEqual(impulse["signal_tier"],"LONG")
+
     def test_actual_moex_shape_is_event_impulse_even_with_spent_old_target(self):
         row=moex_event_impulse_row()
         impulse=VTDE.event_impulse_assess(row,"LONG")
