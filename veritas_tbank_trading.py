@@ -674,15 +674,17 @@ class TBankTradingAdapter:
         task = (generated.get("generateBrokerReportResponse") or {}).get("taskId")
         task = _identifier(task, "INVALID_REPORT_TASK_ID")
         items, count, pages = [], None, None
-        for page in range(max_pages):
-            raw = self._request("broker_report", {"getBrokerReportRequest":{"taskId":task, "page":page}})
+        for page_index in range(max_pages):
+            request_page = page_index + 1
+            raw = self._request("broker_report", {"getBrokerReportRequest":{
+                "taskId":task, "page":request_page}})
             data = raw.get("getBrokerReportResponse")
             if not isinstance(data, dict) or data.get("taskId", task) != task:
                 raise TradingError("BROKER_REPORT_IDENTITY_MISMATCH")
             n, p = data.get("itemsCount", 0), data.get("pagesCount", 0)
             current, batch = data.get("page", 0), data.get("brokerReport", [])
             if (type(n) is not int or type(p) is not int or type(current) is not int
-                    or n < 0 or p < 0 or current != page or not isinstance(batch, list)
+                    or n < 0 or p < 0 or current != page_index or not isinstance(batch, list)
                     or any(not isinstance(x, dict) for x in batch)):
                 raise TradingError("INVALID_BROKER_REPORT_RESPONSE")
             if count is not None and (n != count or p != pages):
@@ -696,10 +698,10 @@ class TBankTradingAdapter:
                     raise TradingError("BROKER_REPORT_DUPLICATE_TRADE")
                 return {"source":"TBANK_BROKER_TRADE_REPORT", "account_id":account,
                         "instrument_uid":uid, "from":start, "to":end,
-                        "received_at":_now(), "task_id":task, "pages":page+1,
+                        "received_at":_now(), "task_id":task, "pages":page_index+1,
                         "retrieval_complete":True, "finality_proven":False,
                         "trades":items}
-            if not batch or page + 1 >= max(1, pages):
+            if not batch or page_index + 1 >= max(1, pages):
                 raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
         raise TradingError("BROKER_REPORT_PAGINATION_INCOMPLETE")
 
@@ -871,6 +873,13 @@ class TBankTradingAdapter:
             end = min(center + timedelta(days=1), cutoff)
         start = center - timedelta(minutes=5)
         start_s, end_s = start.isoformat(), end.isoformat()
+        # T-Bank documents that broker reports are normally available only with
+        # a lag of several days. Avoid hammering a known-too-fresh interval; the
+        # operations proof above is the operational recovery path.
+        if end > now - timedelta(days=3):
+            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN",
+                               code="BROKER_REPORT_PERIOD_NOT_AVAILABLE_YET")
         key = (account, uid, broker, start_s, end_s)
 
         with self._lock:
