@@ -84,8 +84,10 @@ class MoexExtendedSessionTests(unittest.TestCase):
             datetime(2026,10,9,19,22,44,tzinfo=timezone.utc)))  # 22:22 MSK
         self.assertFalse(moex_index_session_open(
             datetime(2026,10,9,20,50,0,tzinfo=timezone.utc)))   # 23:50 MSK
+        self.assertTrue(moex_index_session_open(
+            datetime(2026,10,10,12,0,tzinfo=timezone.utc)))     # 15:00 MSK weekend DSV
         self.assertFalse(moex_index_session_open(
-            datetime(2026,10,10,12,0,tzinfo=timezone.utc)))     # Saturday
+            datetime(2026,10,24,12,0,tzinfo=timezone.utc)))     # official closed weekend
         self.assertTrue(moex_index_session_open(
             datetime(2026,9,25,10,0,tzinfo=timezone.utc)))      # legacy 13:00 MSK
         self.assertFalse(moex_index_session_open(
@@ -109,6 +111,14 @@ class MoexExtendedSessionTests(unittest.TestCase):
         self.assertTrue(raw['moex_session_repaired'])
         self.assertEqual(raw['moex_session_policy'],'IMOEX_EXTENDED_2026_09_26')
 
+    def test_fresh_official_quote_repairs_saturday_weekend_session(self):
+        now=datetime(2026,10,10,12,0,0,tzinfo=timezone.utc)  # 15:00 Moscow
+        b=self.bundle(observed='2026-10-10T11:59:55+00:00')
+        raw=normalize_moex_index_session(b,now)['raw']
+        self.assertTrue(raw['market_open'])
+        self.assertTrue(raw['source_gate_pass'])
+        self.assertEqual(raw['moex_session_policy'],'IMOEX_EXTENDED_2026_09_26')
+
     def test_epoch_exchange_time_is_accepted_but_not_retrieval_time(self):
         now=datetime(2026,10,9,19,22,44,tzinfo=timezone.utc)
         b=self.bundle(observed=now.timestamp()-9)
@@ -120,7 +130,7 @@ class MoexExtendedSessionTests(unittest.TestCase):
         cases=[
             (datetime(2026,10,9,3,59,tzinfo=timezone.utc), self.bundle()),  # before 07:00 MSK
             (datetime(2026,10,9,20,50,tzinfo=timezone.utc), self.bundle(observed='2026-10-09T20:49:55+00:00')),
-            (datetime(2026,10,10,12,0,tzinfo=timezone.utc), self.bundle(observed='2026-10-10T11:59:55+00:00')),
+            (datetime(2026,10,24,12,0,tzinfo=timezone.utc), self.bundle(observed='2026-10-24T11:59:55+00:00')),
             (datetime(2026,9,25,19,0,tzinfo=timezone.utc), self.bundle(observed='2026-09-25T18:59:55+00:00')),
             (datetime(2026,10,9,19,22,44,tzinfo=timezone.utc), self.bundle(source='Yahoo Finance')),
         ]
