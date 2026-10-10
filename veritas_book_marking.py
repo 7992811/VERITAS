@@ -43,6 +43,43 @@ def _write_mark_batch(c, rows, ts):
     )
 
 
+def write_runtime_mark_batch(c, name, updates):
+    """Apply already-validated live marks with one SQL statement.
+
+    This preserves the final runtime wrapper's existing semantics: last_price is
+    updated for every changed mark, while source-audit JSON is merged only when
+    it actually changed. No position geometry, units, stop or target is touched.
+    """
+    rows=[]
+    for item in updates or []:
+        try:
+            price=float(item.get('last_price'))
+        except (TypeError,ValueError):
+            continue
+        if not math.isfinite(price) or price<=0 or not item.get('asset'):
+            continue
+        rows.append({'asset':str(item['asset']),'last_price':price,
+                     'patch':dict(item.get('patch') or {})})
+    if not rows:
+        return 0
+    c.execute(
+        """WITH delta AS (
+             SELECT * FROM jsonb_to_recordset(%s::jsonb)
+             AS d(asset text,last_price double precision,patch jsonb)
+           )
+           UPDATE paper_positions AS target
+              SET last_price=delta.last_price,
+                  payload=CASE WHEN delta.patch='{}'::jsonb
+                               THEN target.payload
+                               ELSE COALESCE(target.payload,'{}'::jsonb)||delta.patch END
+             FROM delta
+            WHERE target.portfolio_name=%s
+              AND target.asset=delta.asset""",
+        (json.dumps(rows,ensure_ascii=False,default=str),name)
+    )
+    return len(rows)
+
+
 def mark_open_positions(c, name, prices, ts, *, positions=None, quote_for_position, decode_payload, iso):
     """Apply source-locked marks with one bounded write per portfolio.
 
