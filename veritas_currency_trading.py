@@ -309,7 +309,11 @@ class CurrencyTradingCoordinator:
             current = canonical_terms(prepare_entry(row, admission, facts.spec, facts.account,
                                     facts.quote, now=now, held_terms=facts.held_terms))
             fixed = ("canonical_event_id", "direction", "horizon", "source_identity",
-                     "stop_price", "target_price", "action", "plan_version")
+                     "stop_price", "target_price", "action", "plan_version",
+                     "currency_entry_mode", "currency_role_strength",
+                     "currency_probability_required", "currency_probability_bypass",
+                     "currency_probability_threshold", "currency_strong_threshold",
+                     "currency_independent_evidence", "currency_min_independent")
             if any(current.get(k) != terms.get(k) for k in fixed):
                 return False
             old_event = (terms.get("entry_context") or {}).get("event")
