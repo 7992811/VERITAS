@@ -236,7 +236,7 @@ def resolve_index_execution_future(reader, preferred_ticker="IMOEXF"):
     for query in ("IMOEX", "Индекс МосБиржи"):
         try:
             found = reader.call("find", query=query).get("instruments", [])
-        except TBankError:
+        except (TBankError, KeyError):
             continue
         for item in found:
             uid, ticker = item.get("uid"), item.get("ticker")
