@@ -362,12 +362,27 @@ def _clean_episode(episode, multiplier, allocation, environment):
         capture_ratio = max(Decimal("0"), min(Decimal("1"), realized_move_pct / mfe_pct))
         giveback_pct = max(Decimal("0"), mfe_pct - max(Decimal("0"), realized_move_pct))
     mfe_threshold = Decimal("0.15")
-    protection_candidate = bool(mfe_pct is not None and mfe_pct >= mfe_threshold)
+    observation_count = _integer(excursion.get("observation_count")) or 0
+    max_gap_seconds = _decimal(excursion.get("max_gap_seconds"))
+    horizon = str(excursion.get("horizon") or meta.get("horizon") or "")
+    tf_seconds = {"1m":60,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400}.get(horizon,300)
+    path_gap_limit = Decimal(str(min(60.0,tf_seconds/2.0)))
+    path_complete = bool(
+        observation_count >= 2 and max_gap_seconds is not None
+        and max_gap_seconds <= path_gap_limit
+    )
+    protection_qualified = bool(excursion.get("protection_qualified_at"))
+    protection_candidate = bool(path_complete and protection_qualified)
     shadow_dynamic_tp = {
         "version": "CURRENCY_LIVE_MANAGEMENT_SHADOW_V1",
         "mode": "SHADOW_ONLY_NO_EXECUTION_CHANGE",
         "mfe_threshold_pct_points": float(mfe_threshold),
-        "mfe_threshold_reached": protection_candidate,
+        "mfe_threshold_reached": bool(mfe_pct is not None and mfe_pct >= mfe_threshold),
+        "persistence_qualified": protection_qualified,
+        "path_complete": path_complete,
+        "observation_count": observation_count,
+        "max_gap_seconds": float(max_gap_seconds) if max_gap_seconds is not None else None,
+        "max_gap_allowed_seconds": float(path_gap_limit),
         "observed_mfe_pct": float(mfe_pct) if mfe_pct is not None else None,
         "observed_mae_pct": float(mae_pct) if mae_pct is not None else None,
         "realized_move_pct": float(realized_move_pct) if realized_move_pct is not None else None,
@@ -436,7 +451,8 @@ def _clean_episode(episode, multiplier, allocation, environment):
                 if isinstance(exit_meta.get("exit_trigger_context"), dict) else None
             ),
             "management_evidence_status": (
-                "DURABLE_LIVE_PATH" if mfe_pct is not None and mae_pct is not None
+                "DURABLE_LIVE_PATH" if path_complete and mfe_pct is not None and mae_pct is not None
+                else "DURABLE_SPARSE_PATH" if mfe_pct is not None and mae_pct is not None
                 else "INCOMPLETE_LIVE_PATH"
             ),
         },
@@ -515,18 +531,32 @@ def _portfolio(account, active, closed_trades, multiplier, checked_at, environme
                 mae_pct = max(ZERO, Decimal("100")*(excursion_mae-excursion_entry)/excursion_entry)
             if move_pct is not None:
                 giveback_pct = max(ZERO, mfe_pct-max(ZERO, move_pct))
+        observation_count = _integer(account.get("excursion_observation_count")) or 0
+        max_gap_seconds = _decimal(account.get("excursion_max_gap_seconds"))
+        tf_seconds = {"1m":60,"5m":300,"15m":900,"30m":1800,"1h":3600,"4h":14400,"1d":86400}.get(str(held["horizon"] or ""),300)
+        path_gap_limit = Decimal(str(min(60.0,tf_seconds/2.0)))
+        path_complete = bool(
+            observation_count >= 2 and max_gap_seconds is not None
+            and max_gap_seconds <= path_gap_limit
+        )
+        protection_qualified = bool(account.get("protection_qualified_at"))
         management_shadow = {
             "version":"CURRENCY_LIVE_MANAGEMENT_SHADOW_V1",
             "mode":"SHADOW_ONLY_NO_EXECUTION_CHANGE",
             "mfe_threshold_pct_points":0.15,
             "mfe_threshold_reached":bool(mfe_pct is not None and mfe_pct >= Decimal("0.15")),
+            "persistence_qualified":protection_qualified,
+            "path_complete":path_complete,
+            "observation_count":observation_count,
+            "max_gap_seconds":float(max_gap_seconds) if max_gap_seconds is not None else None,
+            "max_gap_allowed_seconds":float(path_gap_limit),
             "mfe_pct":float(mfe_pct) if mfe_pct is not None else None,
             "mae_pct":float(mae_pct) if mae_pct is not None else None,
             "current_move_pct":float(move_pct) if move_pct is not None else None,
             "giveback_pct":float(giveback_pct) if giveback_pct is not None else None,
-            "profit_protection_candidate":bool(mfe_pct is not None and mfe_pct >= Decimal("0.15")),
+            "profit_protection_candidate":bool(path_complete and protection_qualified),
             "dynamic_tp_review_candidate":bool(
-                mfe_pct is not None and mfe_pct >= Decimal("0.15")
+                path_complete and protection_qualified
                 and giveback_pct is not None and giveback_pct >= Decimal("0.10")
             ),
             "automatic_action":False,
@@ -560,7 +590,8 @@ def _portfolio(account, active, closed_trades, multiplier, checked_at, environme
             "mae_pct": (-float(mae_pct)) if mae_pct is not None else None,
             "live_giveback_pct": float(giveback_pct) if giveback_pct is not None else None,
             "management_evidence_status": (
-                "DURABLE_LIVE_PATH" if mfe_pct is not None and mae_pct is not None
+                "DURABLE_LIVE_PATH" if path_complete and mfe_pct is not None and mae_pct is not None
+                else "DURABLE_SPARSE_PATH" if mfe_pct is not None and mae_pct is not None
                 else "INCOMPLETE_LIVE_PATH"
             ),
             "currency_live_management_shadow": management_shadow,
@@ -713,6 +744,8 @@ def read_live_currency_on(connection, *, environment=None, checked_at=None, max_
                    broker_signed_lots,broker_observed_at,last_execution_at,last_mark_price,
                    last_mark_observed_at,bound_at,
                    excursion_entry_price,excursion_direction,mfe_price,mae_price,excursion_started_at,
+                   excursion_observation_count,excursion_last_observed_at,excursion_max_gap_seconds,
+                   protection_test_started_at,protection_qualified_at,
                    held_terms->>'stop_price' AS held_stop_price,
                    held_terms->>'target_price' AS held_target_price,
                    held_terms->>'horizon' AS held_horizon,
