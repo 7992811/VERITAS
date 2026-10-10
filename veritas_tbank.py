@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import veritas_index_future_proxy as VIFP
+
 VERSION = "R87_TBANK_THREE_FUTURES_ALL_TIMEFRAMES"
 TARGET = "invest-public-api.tbank.ru:443"
 PACKAGE = "tinkoff.public.invest.api.contract.v1"
@@ -214,6 +216,54 @@ def future_metadata(reader, instrument):
     return {**instrument, **result, "perpetual": perpetual, "spec_observed_at": iso()}
 
 
+def resolve_index_execution_future(reader, preferred_ticker="IMOEXF"):
+    """Resolve the executable MOEX index future without trading a near expiry."""
+    clock = utcnow()
+    preferred_error = None
+    try:
+        preferred = future_metadata(reader, exact_instrument(reader, preferred_ticker))
+        if preferred.get("ticker", "").upper() == "IMOEXF":
+            preferred["perpetual"] = True
+        selected = VIFP.choose([preferred], clock)
+        if selected.get("eligible"):
+            return {**selected["instrument"], "execution_selection": selected["selection"],
+                    "signal_asset": "MOEX", "execution_asset": "MOEXF",
+                    "proxy_policy_version": selected["version"]}
+    except TBankError as exc:
+        preferred_error = str(exc)
+
+    candidates, seen = [], set()
+    for query in ("IMOEX", "Индекс МосБиржи"):
+        try:
+            found = reader.call("find", query=query).get("instruments", [])
+        except TBankError:
+            continue
+        for item in found:
+            uid, ticker = item.get("uid"), item.get("ticker")
+            if not uid or not ticker or uid in seen:
+                continue
+            seen.add(uid)
+            try:
+                meta = future_metadata(reader, {"uid": uid, "ticker": ticker})
+            except TBankError:
+                continue
+            basic = str(meta.get("basic_asset") or "").upper()
+            name = str(meta.get("name") or "").lower()
+            if "IMOEX" not in basic and "мосбирж" not in name and "moex" not in name:
+                continue
+            candidates.append(meta)
+    selected = VIFP.choose(candidates, clock)
+    if not selected.get("eligible"):
+        # Keep legacy diagnostics stable when the preferred instrument simply
+        # does not exist and discovery also finds nothing.
+        if preferred_error == "INSTRUMENT_NOT_FOUND" and not candidates:
+            raise TBankError("INSTRUMENT_NOT_FOUND")
+        raise TBankError(selected["reason"])
+    return {**selected["instrument"], "execution_selection": selected["selection"],
+            "signal_asset": "MOEX", "execution_asset": "MOEXF",
+            "proxy_policy_version": selected["version"]}
+
+
 def closed_candles(items, now=None):
     """Reject invalid or future observations; never manufacture missing bars."""
     now = now or utcnow()
@@ -411,7 +461,9 @@ class TBankConnection:
             if asset in self.instruments:
                 continue
             try:
-                instrument = future_metadata(self.reader, exact_instrument(self.reader, ticker))
+                instrument = (resolve_index_execution_future(self.reader, ticker)
+                              if asset == "MOEXF" else
+                              future_metadata(self.reader, exact_instrument(self.reader, ticker)))
                 with self.lock:
                     self.instruments[asset] = instrument
                     self.instrument_errors.pop(asset, None)
