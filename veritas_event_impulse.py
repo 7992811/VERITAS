@@ -61,10 +61,7 @@ def quote_shock(last_closed_price, quote_price, atr_by_tf, thresholds=None):
     fast_available = [tf for tf in FAST_TIMEFRAMES if tf in ratios]
     out.update(move_points=move, ratios=ratios, exceeds=exceeds,
                available_timeframes=available, coverage=len(available) / len(TIMEFRAMES))
-    extreme = bool(
-        "1h" in ratios and exceeds.get("1h") is True and fast_available
-        and all(exceeds.get(tf) is True for tf in fast_available)
-    )
+    extreme = bool(all(tf in ratios and exceeds.get(tf) is True for tf in TIMEFRAMES))
     fast = bool(all(tf in ratios and exceeds.get(tf) is True for tf in FAST_TIMEFRAMES))
     if extreme:
         return dict(out, eligible=True, severity="GAME_CHANGER_EXTREME",
