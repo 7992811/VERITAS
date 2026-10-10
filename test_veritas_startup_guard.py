@@ -161,6 +161,26 @@ class StartupGuardTests(unittest.TestCase):
         self.assertFalse(state['ok'])
         self.assertIn('portfolio_snapshot',state['pending_checks'])
 
+    def test_prime_runtime_updates_service_flags_only_after_complete_state(self):
+        names=('Impulse','Currency')
+        gate=G.ReadinessGate();gate.mark('database',True,status='READY')
+        runtime={
+            '_STARTUP_GATE':gate,'_BOOTSTRAP_READY':False,'_PORTFOLIO_RUNTIME_READY':False,
+            'V90_CANONICAL_PORTFOLIOS':names,'DISPLAY_ASSETS':('BTC',),'HORIZONS':('5m',),
+            'INTERVAL':60,'emit':Mock(),
+            '_v90r24_ensure_canonical_portfolios':Mock(),
+            '_v90r25_portfolios_refresh':lambda:{
+                'status':'OK','positions_complete':True,'accounting_complete':True,
+                'portfolios':[{'name':'Impulse','positions':[]},{'name':'Currency','positions':[]}]},
+            '_v90r25_trades_fast':lambda limit:{'status':'OK','trades':[]},
+            'fresh_cycle_snapshot':lambda:{
+                'summary':[{'asset':'BTC','horizon':'5m'}],'signals_updated_at':time.time()},
+        }
+        state=G.prime_runtime(runtime,{'status':'OK','names':list(names),'count':2})
+        self.assertTrue(state['ok'])
+        self.assertTrue(runtime['_BOOTSTRAP_READY'])
+        self.assertTrue(runtime['_PORTFOLIO_RUNTIME_READY'])
+
 
 if __name__ == '__main__':
     unittest.main()
