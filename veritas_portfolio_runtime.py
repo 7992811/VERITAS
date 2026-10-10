@@ -11,6 +11,8 @@ import veritas_canonical_runtime as VCR
 import veritas_timeframe_policy as TFP
 import veritas_release as VR, veritas_execution_efficiency as VEE
 import veritas_portfolio_reporting as VPRPT
+import veritas_protective_io as PIO
+import veritas_book_marking as VBM
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -4944,6 +4946,12 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     import veritas_thesis_guard as VTG
     rows=[dict(z) for z in c.execute('SELECT * FROM paper_positions WHERE portfolio_name=%s',(name,)).fetchall()]
     safe_prices=dict(prices or {}); safe_candidates=dict(candidates or {}); safe_summary=list(summary or [])
+
+    # Prepare every source-locked mark first, then persist the unchanged final
+    # runtime semantics with one UPDATE ... FROM batch instead of one UPDATE per
+    # held asset. The following management pass still sees the same immutable
+    # caller snapshot and fresh quote objects as before.
+    prepared=[]; mark_updates=[]
     for z in rows:
         asset=z['asset']; identity=VPS.position_identity(z); q=VPG.quote_for_position(z,now=ts)
         safe_prices[asset]=float(q['price']) if q else VPS.frozen_price(z)
@@ -4954,17 +4962,15 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             audit['price_source_status']=status
         if identity and payload.get('price_source_lock')!=identity:
             audit['price_source_lock']=identity
-        # The live mark belongs on paper_positions. Per-tick source evidence is
-        # already held by the quote/observation paths; rewriting paper_trades on
-        # every mark added lock time without changing accounting.
-        if audit:
-            c.execute("UPDATE paper_positions SET last_price=%s,payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb "
-                      "WHERE portfolio_name=%s AND asset=%s",
-                      (safe_prices[asset],json.dumps(audit),name,asset))
-        else:
-            c.execute("UPDATE paper_positions SET last_price=%s "
-                      "WHERE portfolio_name=%s AND asset=%s AND last_price IS DISTINCT FROM %s",
-                      (safe_prices[asset],name,asset,safe_prices[asset]))
+        prior=z.get('last_price')
+        if audit or prior is None or prior!=safe_prices[asset]:
+            mark_updates.append({'asset':asset,'last_price':safe_prices[asset],'patch':audit})
+        prepared.append((z,identity,q))
+    VBM.write_runtime_mark_batch(c,name,mark_updates)
+
+    thesis_patches=[]
+    for z,identity,q in prepared:
+        asset=z['asset']
         candidate=safe_candidates.get(asset)
         # Foreign-source indicator changes cannot invalidate a held position.
         def usable(row):
@@ -4978,13 +4984,20 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
             safe_candidates,safe_summary=VTM.filter_lower_context(z,safe_candidates,safe_summary)
         safe_candidates,safe_summary,guard=VTG.guard_open_position(c,z,safe_candidates,safe_summary,now=ts)
         if guard.get('active'):
-            patch={'ctc_senior_thesis_guard':guard}
-            c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
-                      (json.dumps(patch),name,asset))
-            if z.get('active_trade_id'):
-                c.execute("UPDATE paper_trades SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE trade_id=%s",
-                          (json.dumps(patch),z['active_trade_id']))
-    rows = z = None
+            payload=_v90j_json(z.get('payload'))
+            if payload.get('ctc_senior_thesis_guard')!=guard:
+                patch={'ctc_senior_thesis_guard':guard}
+                tid=z.get('active_trade_id')
+                if tid:
+                    thesis_patches.append((tid,patch))
+                else:
+                    # Schema requires active_trade_id, but keep a fail-safe path
+                    # for legacy/replay rows rather than dropping the position patch.
+                    c.execute("UPDATE paper_positions SET payload=COALESCE(payload,'{}'::jsonb)||%s::jsonb WHERE portfolio_name=%s AND asset=%s",
+                              (json.dumps(patch),name,asset))
+    if thesis_patches:
+        PIO.write_patches_one_roundtrip(c,thesis_patches)
+    rows = prepared = z = None
     return _r80_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,VC.COMMISSION_RATE,safe_summary)
 
 
