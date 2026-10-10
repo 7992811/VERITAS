@@ -539,6 +539,34 @@ class CurrencyTradeLedger:
         for key, expected in (("account_id",account_id),("instrument_uid",instrument_uid),("side",side)):
             if key in metadata and metadata[key] != expected:
                 raise LedgerError("EXECUTION_METADATA_IDENTITY_MISMATCH")
+        # Preserve the live management path on reducing executions before the
+        # position projection can become flat and clear current excursion state.
+        signed_before = lots(row["signed_lots"])
+        delta_sign = 1 if side == "BUY" else -1
+        reducing = bool(signed_before and signed_before * delta_sign < 0)
+        if reducing:
+            entry = row.get("excursion_entry_price")
+            mfe = row.get("mfe_price")
+            mae = row.get("mae_price")
+            direction = row.get("excursion_direction")
+            snapshot = {
+                "version":"CURRENCY_LIVE_EXCURSION_V1",
+                "direction":direction,
+                "entry_price":entry,
+                "mfe_price":mfe,
+                "mae_price":mae,
+                "started_at":row.get("excursion_started_at"),
+                "last_mark_observed_at":row.get("last_mark_observed_at"),
+            }
+            if entry is not None and mfe is not None and mae is not None and direction in ("LONG","SHORT"):
+                entry_d = exact(entry, positive=True)
+                if direction == "LONG":
+                    snapshot["mfe_pct"] = max(ZERO, (exact(mfe)-entry_d)/entry_d*100)
+                    snapshot["mae_pct"] = max(ZERO, (entry_d-exact(mae))/entry_d*100)
+                else:
+                    snapshot["mfe_pct"] = max(ZERO, (entry_d-exact(mfe))/entry_d*100)
+                    snapshot["mae_pct"] = max(ZERO, (exact(mae)-entry_d)/entry_d*100)
+            metadata["currency_excursion_snapshot"] = _canonical(snapshot)
         values = {"trade_id":identifier(trade_id), "client_order_id":identifier(client_order_id),
                   "broker_order_id":identifier(broker_order_id), "side":side,
                   "lots":lots(lots_count, positive=True), "price":spec.execution_price(price),
