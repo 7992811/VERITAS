@@ -524,6 +524,35 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
         self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "FILLED")
         self.assertEqual(self.transport.count("PostOrder"), 1)
 
+    def test_acknowledged_order_falls_back_to_request_uuid_when_exchange_id_expires(self):
+        approved = self.approve()
+        self.transport.handlers["PostOrder"] = lambda body: Response(
+            order(client=body["orderId"], timeInForce=body["timeInForce"]))
+        sent = self.coordinator.execute_approved(approved["proposal_id"])
+        self.assertTrue(sent["ok"], sent)
+        held = self.repo.get(approved["proposal_id"])
+        self.assertEqual(held["status"], "ACKNOWLEDGED")
+        self.assertTrue(held["broker_order_id"])
+
+        receipt = T.OrderResult(
+            approved["client_order_id"], held["broker_order_id"], UID, "BUY", 2, 2,
+            "FILLED", "ACCEPTED", broker_status="EXECUTION_REPORT_STATUS_FILL",
+            average_fill_price=D("12.344"), order_type="ORDER_TYPE_LIMIT",
+            limit_price=D("12.345"), time_in_force="TIME_IN_FORCE_FILL_AND_KILL")
+        def lookup(account_id, order_id=None, *, client_order_id=None):
+            if order_id is not None:
+                raise T.TradingError("BROKER_NOT_FOUND", not_found=True)
+            self.assertEqual(client_order_id, approved["client_order_id"])
+            return receipt
+
+        with patch.object(self.adapter, "get_order", side_effect=lookup):
+            result = self.coordinator.reconcile()
+
+        self.assertEqual(result[0]["code"], "FILLED")
+        self.assertEqual(result[0]["lookup"], "client_order_id_fallback")
+        self.assertEqual(self.repo.get(approved["proposal_id"])["status"], "FILLED")
+        self.assertEqual(self.transport.count("PostOrder"), 1)
+
     def test_unknown_first_binding_requires_uuid_returned_by_broker_receipt(self):
         approved = self.approve()
         self.transport.handlers["PostOrder"] = TimeoutError("synthetic lost reply")
