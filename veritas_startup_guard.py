@@ -151,6 +151,62 @@ def prime_live_state_with_assets(gate, *, canonical_portfolios, display_assets, 
     return state
 
 
+def prime_runtime(runtime, canonical_state=None):
+    """Prime the current service namespace and publish readiness atomically."""
+    gate = runtime['_STARTUP_GATE']
+    if not (gate.snapshot().get('checks') or {}).get('database'):
+        runtime['_BOOTSTRAP_READY'] = False
+        return gate.snapshot()
+    state = prime_live_state_with_assets(
+        gate,
+        canonical_portfolios=runtime['V90_CANONICAL_PORTFOLIOS'],
+        display_assets=runtime['DISPLAY_ASSETS'],
+        horizons=runtime['HORIZONS'],
+        canonical_state=canonical_state,
+        ensure_canonical=runtime['_v90r24_ensure_canonical_portfolios'],
+        portfolio_refresh=runtime['_v90r25_portfolios_refresh'],
+        trade_refresh=lambda: runtime['_v90r25_trades_fast'](100),
+        market_cycle=runtime['fresh_cycle_snapshot'],
+        interval=runtime['INTERVAL'],
+        emit=runtime.get('emit'))
+    checks = state.get('checks') or {}
+    runtime['_PORTFOLIO_RUNTIME_READY'] = bool(checks.get('canonical_portfolios'))
+    runtime['_BOOTSTRAP_READY'] = bool(state.get('ok'))
+    return state
+
+
+def retry_runtime(runtime, *, timeout_seconds=120.0, interval_seconds=2.0):
+    """Retry incomplete live-state reads after market/runtime workers have started."""
+    deadline = time.time() + max(0.0, float(timeout_seconds))
+    interval = max(0.25, float(interval_seconds))
+    while not runtime['_STARTUP_GATE'].snapshot().get('ok') and time.time() < deadline:
+        time.sleep(interval)
+        try:
+            prime_runtime(runtime)
+        except Exception as exc:
+            runtime['emit']('v90_startup_readiness_retry_error', error_type=type(exc).__name__)
+    state = runtime['_STARTUP_GATE'].snapshot()
+    if not state.get('ok'):
+        runtime['emit']('v90_startup_readiness_deferred',
+                        pending_checks=state.get('pending_checks'))
+    return state
+
+
+def schedule_storage_audit(audit, emit, *, delay_seconds=20.0):
+    """Move diagnostic storage work out of the critical bootstrap path."""
+    def run():
+        try:
+            audit()
+        except Exception as exc:
+            emit('v90_storage_audit_error', phase='background_startup',
+                 error_type=type(exc).__name__)
+    timer = threading.Timer(max(0.0, float(delay_seconds)), run)
+    timer.name = 'veritas-storage-audit'
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 def schema_matches(connection, required_columns, required_indexes):
     """Check the caller's schema without acquiring locks through repeated DDL."""
     rows = connection.execute("""
