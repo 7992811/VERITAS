@@ -1,5 +1,4 @@
 """CTC v2 canonical admission and candidate routing.
-
 This module intentionally has no dependency on veritas_portfolio or historical
 Rxx layers. Unknown blockers fail closed.
 """
@@ -16,31 +15,24 @@ import veritas_timeframe_policy as TFP
 import veritas_stop_risk as VSR
 import veritas_admission_trace as VAT
 import veritas_trend_day_efficiency as VTDE
-
 VERSION=CTC.BASIS_RUNTIME
 TRIGGER_HORIZONS=("1m","5m","1h","4h")
-
 def _num(v, default=None):
     try:
         x=float(v)
         return x if math.isfinite(x) else default
     except Exception:
         return default
-
 def _direction(row):
     return str((row or {}).get("research_decision") or (row or {}).get("decision") or "NO_TRADE")
-
 def _tier(row):
     return str((row or {}).get("signal_tier") or (row or {}).get("execution_signal_tier") or "").upper()
-
 def _quote_row(row):
     return VPS.execution_row(row)
-
 def anti_chase_gate(row, price=None, now=None):
     row=row or {}
     px=_num(price if price is not None else row.get("price"))
     return TFP.entry_gate(row,px,_direction(row),now)
-
 def _strong_reversal(row):
     row=row or {}
     d=_direction(row)
@@ -61,7 +53,6 @@ def _strong_reversal(row):
                 and str(row.get("entry_quality") or plan.get("entry_quality") or "") in ("FRESH_BREAKOUT","CONFIRMED_TREND")
                 and _num(hs.get("score") or row.get("horizon_structure_score"),0.0)>=0.72
                 and indep>=4 and rr>=1.50 and move>=max(0.0060,4.0*cost))
-
 def direction_conflict(row):
     row=row or {}
     d=_direction(row)
@@ -73,7 +64,6 @@ def direction_conflict(row):
     if str(row.get("horizon") or "")=="5m" and row.get("_r57_senior_conflict") and not _strong_reversal(row):
         return "R59_5M_COUNTER_SENIOR_NOT_CONFIRMED"
     return None
-
 def local_confirmation_gate(row,event=None):
     row=row or {}
     h=str(row.get("horizon") or "")
@@ -101,8 +91,6 @@ def local_confirmation_gate(row,event=None):
                     "context":ctx,"senior_state":state,"senior_score":score,
                     "entry_quality":quality,"independent":indep}
     return {"eligible":True,"reason":"LOCAL_CONFIRMATION_OK","context":ctx}
-
-
 def paper_risk_governor(policy, drawdown):
     p=dict(policy or {})
     mode=str(p.get("mode") or "")
@@ -124,7 +112,6 @@ def paper_risk_governor(policy, drawdown):
                 "multiplier":float(profile["caution_multiplier"]),"hard_drawdown_limit":hard,"profile":profile["name"]}
     return {"state":"NORMAL","max_gross":float(profile["normal_max_gross"]),"new_risk":True,
             "multiplier":1.0,"hard_drawdown_limit":hard,"profile":profile["name"]}
-
 def _fraction(policy, drawdown, soft=False):
     p=policy or {}
     row=p.get("_row") or {}
@@ -142,17 +129,12 @@ def _fraction(policy, drawdown, soft=False):
     step=float(p.get("position_step") or 0.05)
     f=min(f,cap)
     return max(0.0,math.floor(f/step+1e-9)*step),rg
-
 def evaluate(row, policy, drawdown, now=None):
-    # Preserve the exact gate clock, including time spent refreshing the quote.
-    # The original optional now still controls refresh inside the decision body.
     clock=TFP._decision_clock(datetime.now(timezone.utc) if now is None else now)
     out=_evaluate(row,policy,drawdown,now,clock=clock)
     import veritas_learning_bridge as LEARNING
     out=LEARNING.apply_admission(row,out,policy,now=clock)
     return dict(out,checked_at=clock.isoformat() if clock is not None else None)
-
-
 def _evaluate(row, policy, drawdown, now=None, *, clock):
     raw=dict(row or {})
     p=dict(policy or {})
@@ -165,7 +147,6 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
     d=_direction(raw)
     if d not in ("LONG","SHORT"):
         return {"open":False,"fraction":0.0,"reason":"NO_DIRECTION","hard_veto":False,"canonical_stage":"THESIS"}
-
     if clock is None:
         return {"open":False,"fraction":0.0,"reason":"SAME_TF_DECISION_TIME_REQUIRED","hard_veto":True,"canonical_stage":"DATA"}
     if now is None or raw.get("_runtime_quote_refresh"):
@@ -184,7 +165,6 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
     if not qgate.get("eligible"):
         return {"open":False,"fraction":0.0,"reason":"EXECUTION_QUOTE_STALE","hard_veto":True,
                 "quote_time_gate":qgate,"canonical_stage":"DATA"}
-
     work=TFP.prepare_row(work,price,clock)
     plan=work.get("trade_plan") or {}
     integrity=plan.get("trade_integrity") or {}
@@ -195,9 +175,6 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
         hard.append("FAST_TF_CONFLICT")
     if (plan.get("profitability_gate") or {}).get("status")=="NEGATIVE_EDGE":
         hard.append("NEGATIVE_VALIDATED_SETUP_EDGE")
-    # This independently proved quote event owns its structural thesis. The
-    # previous forecast direction is still displayed, but cannot postpone its
-    # trigger until the slower feature cycle catches up.
     quote_structure=TFP.structural_quote_rule(work)
     conflict=None if quote_structure else direction_conflict(work)
     if conflict:
@@ -205,7 +182,6 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
     if hard:
         return {"open":False,"fraction":0.0,"reason":hard[0],"hard_veto":True,
                 "hard_blockers":hard,"canonical_stage":"THESIS"}
-
     soft=[]
     event=TFP.entry_gate(work,price,d,clock)
     if not event.get("eligible"):
@@ -225,7 +201,6 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
     if not chase.get("eligible"):
         return {"open":False,"fraction":0.0,"reason":chase["reason"],"hard_veto":True,
                 "execution_timing":chase,"trend_event":event,"canonical_stage":"TIMING"}
-
     p["_row"]=work
     game_changer=VTDE.event_impulse_assess(work,d)
     mode=str(p.get("mode") or "")
@@ -255,12 +230,6 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
         )
         work["trade_plan"]=plan
     full_fraction,rg=_fraction(p,drawdown,soft=False)
-    # Owner P0: verified quote + senior structural break + forming move above
-    # completed multi-timeframe volatility is already the confirmation. In
-    # NORMAL risk state the first request goes directly to the portfolio's
-    # temporary event-impulse maximum; stop-risk and final economics still cap
-    # the actual executable fraction. CAUTION/DEFENSE/HARD_STOP never get
-    # widened by this rule.
     if game_changer.get('eligible') and game_changer.get('immediate_max') and rg.get('state')=='NORMAL':
         cfg=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('event_impulse') or {}
         caps=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('temporary_caps') or {}
@@ -295,7 +264,6 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
         return {"open":False,"fraction":0.0,"reason":hard_econ[0],"hard_veto":True,
                 "economics_blockers":econ_blockers,"hard_economics_blockers":hard_econ,
                 "economics":economics,"risk_governor":rg,"canonical_stage":"ECONOMICS"}
-
     role=currency_role or VROLE.gate(work,str(p.get("mode") or ""))
     if not role.get("eligible"):
         return {"open":False,"fraction":0.0,"reason":role["reason"],"hard_veto":True,"role_gate":role,"canonical_stage":"THESIS"}
@@ -317,7 +285,6 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
             "trend_event":event,"execution_timing":chase,
             "canonical_stage":"SIZE","canonical_policy_version":CTC.VERSION,
             "prepared_plan":dict(plan),"structural_policy_version":plan.get('structural_policy_version')}
-
 def _rank(row):
     r=row or {}
     d=_direction(r)
@@ -330,7 +297,6 @@ def _rank(row):
     super_bonus=0.50 if tier in ("SUPER_LONG","SUPER_SHORT") else 0.0
     tf_bonus={"5m":0.12,"1h":0.10,"4h":0.08,"1m":0.06,"1d":0.04,"3d":0.02,"7d":0.01}.get(str(r.get("horizon") or ""),0.0)
     return conf+0.20*hscore+super_bonus+tf_bonus
-
 def _local_execution_context(summary,asset,direction):
     fast=[dict(r) for r in (summary or [])
           if str((r or {}).get("asset") or "")==str(asset)
@@ -347,8 +313,6 @@ def _local_execution_context(summary,asset,direction):
                                     or r.get("horizon_structure_state"))}
                 for r in fast],
     }
-
-
 def _prepare_candidate(row,summary):
     r=dict(row or {})
     r["_admission_audit"]={}
@@ -364,8 +328,6 @@ def _prepare_candidate(row,summary):
     r["_pwin"]=cp if cp is not None else max(0.0,min(1.0,_num(r.get("confidence"),0.5)))
     r["_pwin_source"]="EMPIRICAL_CALIBRATION" if cp is not None else "MODEL_QUALITY_SCORE_UNCALIBRATED"
     return r
-
-
 def candidate_book(summary):
     rows=[dict(r) for r in (summary or []) if _direction(r) in ("LONG","SHORT")]
     grouped={}
@@ -375,17 +337,12 @@ def candidate_book(summary):
         if asset and (asset not in grouped or r["_rank"]>grouped[asset]["_rank"]):
             grouped[asset]=r
     return grouped
-
-
 def currency_candidate_book(summary, now=None):
     rows=[dict(r) for r in (summary or [])
           if str((r or {}).get("asset") or "")=="CNYRUBF"
           and _direction(r) in ("LONG","SHORT")]
     if not rows:
         return {}
-    # Currency is execution-sensitive: a fresh causal 1m break may confirm
-    # the move before a slower 1h/4h row, while 5m remains the preferred balance
-    # of speed and noise. Every candidate still passes the full canonical gate.
     priority={"5m":5.0,"1m":4.5,"1h":4.0,"4h":3.0,"1d":1.5,"3d":1.0,"7d":0.5}
     prepared=[]
     senior4=next((dict(r) for r in (summary or [])
@@ -393,8 +350,6 @@ def currency_candidate_book(summary, now=None):
                   and str((r or {}).get("horizon") or "")=="4h"),None)
     for raw in rows:
         r=_prepare_candidate(raw,summary)
-        # Native structure is a hard admission check below, not a second score
-        # that could reorder Currency's approved timeframe preference.
         r["_currency_route_score"]=priority.get(str(r.get("horizon") or ""),0.0)+0.10*_rank(r)
         h=str(r.get("horizon") or "")
         if h not in ("1m","5m","1h") and senior4:
@@ -409,12 +364,6 @@ def currency_candidate_book(summary, now=None):
                 sdir in ("LONG","SHORT") and sdir!=_direction(r)
                 and state in ("BUILDING_TREND","CONFIRMED_TREND") and score>=0.65)
         prepared.append(r)
-
-    # Priority applies among executable setups. An inadmissible 5m signal must
-    # not hide an independently admissible 1h/4h setup for the same instrument.
-    # Each candidate passes the complete canonical gate, including its existing
-    # senior/local conflicts. Final execution still rechecks current drawdown,
-    # sizing, held-position source identity and refreshed quote economics.
     prepared.sort(key=lambda x:x["_currency_route_score"],reverse=True)
     chosen=prepared[0]
     trace=[]
@@ -426,21 +375,16 @@ def currency_candidate_book(summary, now=None):
         if admission.get("open"):
             chosen=candidate
             break
-    # If every setup is blocked, retain the highest-priority candidate so the
-    # portfolio/UI continues to report its actual blocker rather than NO_ROW.
     chosen["_currency_route_trace"]=trace
     return {"CNYRUBF":chosen}
-
 def impulse_candidate_book(summary):
     out={}
     for asset,row in candidate_book(summary).items():
         if str(row.get("horizon") or "") in CTC.PORTFOLIO_POLICIES["Impulse"]["allowed_horizons"]:
             out[asset]=row
     return out
-
 def aggressive_candidate_book(summary, candidates=None):
     return dict(candidates or candidate_book(summary))
-
 def transition_candidate_book(summary, base_book, mode=None):
     """Choose among fully admissible setups; retain real blockers if none pass."""
     name=next((n for n in CTC.PORTFOLIO_ORDER
@@ -469,7 +413,6 @@ def transition_candidate_book(summary, base_book, mode=None):
             if admission.get("open"):
                 chosen=candidate
                 break
-        # Actual execution rechecks drawdown, source lock, price and economics.
         chosen["_canonical_route_trace"]=trace
         routed[asset]=chosen
     return routed
