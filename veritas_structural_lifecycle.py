@@ -29,9 +29,33 @@ def owns_position(position):
                 and SB.validate_event(p.get('entry_event_snapshot'),VPS.position_identity(position)).get('eligible'))
 
 
+def _impulse_snapshot_from_payload(p):
+    entry=(p or {}).get('entry_event_impulse') or {}
+    latest=(p or {}).get('last_event_impulse') or {}
+    impulse=latest if isinstance(latest,dict) and latest.get('eligible') else entry
+    return impulse if isinstance(impulse,dict) else {}
+
+
 def active_ladder(position):
-    """The current target schedule must still match its frozen causal event."""
+    """Return only an execution-authoritative target schedule.
+
+    Event-impulse entry targets are reference evidence only. They never become
+    dormant orders that reactivate after the impulse. A fresh post-impulse
+    target plan must be rebuilt from current structure first.
+    """
     p=payload(position)
+    impulse=_impulse_snapshot_from_payload(p)
+    if impulse.get('eligible'):
+        if p.get('post_impulse_target_rebuild_status')!='READY':
+            return []
+        plan=p.get('post_impulse_target_plan') or {}
+        ladder=p.get('active_target_ladder') or []
+        if (plan.get('basis')!='CURRENT_STRUCTURE_AND_SENIOR_EXTREMES'
+                or plan.get('direction')!=position.get('direction')
+                or ladder != plan.get('ladder')):
+            return []
+        return deepcopy(ladder)
+
     event=p.get('active_target_event_snapshot') or p.get('entry_event_snapshot') or {}
     ladder=p.get('active_target_ladder') or event.get('target_ladder') or []
     if (not owns_position(position) or not SB.validate_event(event,VPS.position_identity(position)).get('eligible')
@@ -336,30 +360,129 @@ def _protected_structural_runner_ratio(position):
     return VTDE.protected_runner_ratio(position,p)
 
 
+def _fresh_post_impulse_targets(row,price,direction):
+    """Pick new targets from current multi-TF levels after the impulse."""
+    row=row or {}
+    plan=row.get('trade_plan') or {}
+    mtf=plan.get('multi_tf_level_context') or {}
+    sign=1 if direction=='LONG' else -1
+    px=VPS.positive(price)
+    if px is None:
+        return []
+    try:
+        noise=max(0.0,float(mtf.get('target_noise_floor_pct') or 0.0))
+    except Exception:
+        noise=0.0
+    items=[]
+    for source in (mtf.get('target_ladder') or [], plan.get('target_ladder') or []):
+        if not isinstance(source,dict):
+            continue
+        target=VPS.positive(source.get('price'))
+        if target is None:
+            continue
+        distance=sign*(target-px)/px
+        if distance<=max(noise,1e-8):
+            continue
+        tfs=source.get('timeframes') or ([source.get('timeframe')] if source.get('timeframe') else [])
+        items.append({'price':float(target),'distance_pct':float(distance),
+                      'timeframes':[str(x) for x in tfs if x],
+                      'origin':'CURRENT_MULTI_TF_STRUCTURE'})
+    items.sort(key=lambda x:x['distance_pct'])
+    dedup=[]
+    for item in items:
+        if not dedup or not math.isclose(dedup[-1]['price'],item['price'],rel_tol=1e-9,abs_tol=max(1e-10,px*1e-8)):
+            dedup.append(item)
+    return dedup[:2]
+
+
+def rebuild_targets_after_impulse(position,row,price,ts,*,exhaustion_confirmed,volatility_contracted):
+    """Arm fixed TP only after confirmed decay and lower volatility."""
+    p=payload(position)
+    impulse=_impulse_snapshot_from_payload(p)
+    cfg=((getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('event_impulse') or {})
+    out={'ready':False,'reason':'EVENT_IMPULSE_TARGET_REBUILD_NOT_APPLICABLE','patch':{}}
+    if not impulse.get('eligible') or not cfg.get('reassess_targets_after_impulse_exhaustion'):
+        return out
+    if not exhaustion_confirmed:
+        return dict(out,reason='EVENT_IMPULSE_EXHAUSTION_CONFIRMATION_REQUIRED')
+    if cfg.get('volatility_contraction_required',True) and not volatility_contracted:
+        return dict(out,reason='EVENT_IMPULSE_VOLATILITY_CONTRACTION_REQUIRED')
+    direction=str(position.get('direction') or '')
+    px=VPS.positive(price)
+    if direction not in ('LONG','SHORT') or px is None:
+        return dict(out,reason='EVENT_IMPULSE_TARGET_REBUILD_INPUT_INVALID')
+    targets=_fresh_post_impulse_targets(row,px,direction)
+    previous=deepcopy(p.get('active_target_ladder') or p.get('initial_target_ladder') or [])
+    history=list(p.get('target_lifecycle_history') or [])
+    if not targets:
+        history.append({'action':'POST_IMPULSE_TARGET_REBUILD_WAIT','at':str(ts),
+                        'previous_ladder':previous})
+        patch={'post_impulse_target_rebuild_status':'WAIT_FRESH_LEVELS',
+               'stale_pre_impulse_target_ladder':previous,
+               'active_target_ladder':[],'active_target_stage':0,
+               'take_price':None,'target_price':None,'runner_target_price':None,
+               'target_lifecycle_history':history[-32:]}
+        return dict(out,reason='EVENT_IMPULSE_FRESH_TARGETS_UNAVAILABLE',patch=patch)
+    fractions=[1.0] if len(targets)==1 else [0.5,0.5]
+    ladder=[{'price':x['price'],'fraction':f,'kind':'TP1' if i==0 else 'TP2',
+             'timeframes':x['timeframes'],'origin':x['origin'],
+             'basis':'POST_IMPULSE_CURRENT_STRUCTURE'}
+            for i,(x,f) in enumerate(zip(targets,fractions))]
+    plan={'basis':'CURRENT_STRUCTURE_AND_SENIOR_EXTREMES','direction':direction,
+          'reference_price':float(px),'generated_at':str(ts),
+          'exhaustion_confirmed':True,'volatility_contracted':True,
+          'ladder':deepcopy(ladder)}
+    history.append({'action':'POST_IMPULSE_TARGETS_REBUILT','at':str(ts),
+                    'reference_price':float(px),'previous_ladder':previous,
+                    'new_ladder':deepcopy(ladder)})
+    patch={'post_impulse_target_rebuild_status':'READY',
+           'post_impulse_target_plan':plan,
+           'stale_pre_impulse_target_ladder':previous,
+           'active_target_ladder':deepcopy(ladder),'active_target_stage':0,
+           'take_price':ladder[0]['price'],'target_price':ladder[0]['price'],
+           'runner_target_price':ladder[-1]['price'],
+           'target_lifecycle_history':history[-32:]}
+    return {'ready':True,'reason':'EVENT_IMPULSE_FRESH_TARGETS_READY',
+            'ladder':deepcopy(ladder),'patch':patch}
+
+
+def invalidate_post_impulse_targets_on_reacceleration(position,ts):
+    p=payload(position)
+    if p.get('post_impulse_target_rebuild_status')!='READY':
+        return {'invalidated':False,'patch':{}}
+    history=list(p.get('target_lifecycle_history') or [])
+    history.append({'action':'POST_IMPULSE_TARGETS_INVALIDATED_REACCELERATION',
+                    'at':str(ts),'previous_ladder':deepcopy(p.get('active_target_ladder') or [])})
+    return {'invalidated':True,'patch':{
+        'post_impulse_target_rebuild_status':'STALE_REACCELERATION',
+        'active_target_ladder':[],'active_target_stage':0,
+        'take_price':None,'target_price':None,'runner_target_price':None,
+        'target_lifecycle_history':history[-32:],
+    }}
+
+
 def _event_impulse_fixed_tp_deferred(position):
     p=payload(position)
     cfg=((getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('event_impulse') or {})
     if not cfg.get('enabled') or not cfg.get('defer_fixed_take_profit'):
         return {'deferred':False,'reason':'EVENT_IMPULSE_TP_POLICY_DISABLED'}
-    entry=p.get('entry_event_impulse') or {}
-    latest=p.get('last_event_impulse') or {}
-    impulse=latest if isinstance(latest,dict) and latest.get('eligible') else entry
-    if not isinstance(impulse,dict) or not impulse.get('eligible'):
+    impulse=_impulse_snapshot_from_payload(p)
+    if not impulse.get('eligible'):
         return {'deferred':False,'reason':'EVENT_IMPULSE_NOT_ACTIVE'}
-    # Once the ordinary position-management loop has explicitly classified the
-    # trend as no longer active, fixed targets may be reassessed again. Before
-    # that first management observation, the causal entry impulse owns the hold.
-    if 'r46_trend_hold_active' in p:
-        active=bool(p.get('r46_trend_hold_active'))
-    else:
-        active=True
-    if not active:
-        return {'deferred':False,'reason':'EVENT_IMPULSE_EXHAUSTED_REASSESS_TARGETS',
-                'event_impulse':deepcopy(impulse)}
-    return {'deferred':True,'reason':'OWNER_P0_EVENT_IMPULSE_FIXED_TP_DEFERRED',
-            'event_impulse':deepcopy(impulse),
-            'target_reference_mode':cfg.get('target_reference_mode'),
-            'exit_authority':list(cfg.get('exit_authority') or ())}
+    active=bool(p.get('r46_trend_hold_active')) if 'r46_trend_hold_active' in p else True
+    if active:
+        return {'deferred':True,'reason':'OWNER_P0_EVENT_IMPULSE_FIXED_TP_DEFERRED',
+                'event_impulse':deepcopy(impulse),
+                'target_reference_mode':cfg.get('target_reference_mode'),
+                'exit_authority':list(cfg.get('exit_authority') or ())}
+    if (cfg.get('reassess_targets_after_impulse_exhaustion')
+            and p.get('post_impulse_target_rebuild_status')!='READY'):
+        return {'deferred':True,'reason':'EVENT_IMPULSE_EXHAUSTED_FRESH_TARGETS_REQUIRED',
+                'event_impulse':deepcopy(impulse),
+                'target_reference_mode':cfg.get('target_reference_mode'),
+                'exit_authority':list(cfg.get('exit_authority') or ())}
+    return {'deferred':False,'reason':'EVENT_IMPULSE_FRESH_TARGETS_READY',
+            'event_impulse':deepcopy(impulse)}
 
 
 def target_reduction(position,price,nav,ts):
