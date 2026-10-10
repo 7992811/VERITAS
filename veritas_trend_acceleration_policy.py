@@ -44,7 +44,7 @@ TREND_ACCELERATION_POLICY = {
         "entry_requires_news": False,
         "news_confirmation_role": "HOLD_AND_SCALE_CONFIRMATION",
         "accepted_regimes": ("UPTREND_HIGH_VOL", "DOWNTREND_HIGH_VOL"),
-        "accepted_fast_tiers": ("SUPER_LONG", "SUPER_SHORT"),
+        "accepted_fast_tiers": ("LONG", "SUPER_LONG", "SHORT", "SUPER_SHORT"),
         "minimum_structure_score": 0.90,
         "minimum_independent_evidence": 4,
         "breakout_required": True,
