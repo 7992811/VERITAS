@@ -17,7 +17,7 @@ import uuid
 import veritas_canonical_constitution as CTC
 import veritas_canonical_runtime as VCR
 import veritas_timeframe_policy as TFP
-from veritas_tbank_trading import PreSubmissionBlocked
+from veritas_tbank_trading import PreSubmissionBlocked, TradingError
 from veritas_trade_approvals import ApprovalError, canonical_terms
 from veritas_currency_trade_plan import (
     AccountSnapshot, BrokerQuote, ContractSpec, TradePlanBlocked, currency_limits,
@@ -497,6 +497,10 @@ class CurrencyTradingCoordinator:
                         try:
                             result = self.adapter.get_order(self.account_id, proposal["broker_order_id"])
                             lookup = "broker_order_id"
+                            if (row_status == "ACKNOWLEDGED"
+                                    and result.status == "UNKNOWN"
+                                    and getattr(result, "code", None) in {"BROKER_HTTP_400", "INVALID_BROKER_JSON"}):
+                                raise TradingError(result.code, not_found=True)
                         except Exception as exc:
                             # T-Bank may stop resolving an exchange order id while
                             # the immutable request UUID is still queryable. This
