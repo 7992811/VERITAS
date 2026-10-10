@@ -724,7 +724,11 @@ class TBankTradingAdapter:
         lot_size = _integer(lot_size, minimum=1, code="INVALID_LOT_SIZE")
         if ticker != "CNYRUBF":
             raise TradingError("EXACT_CNY_INSTRUMENT_REQUIRED")
-        if time_in_force != "TIME_IN_FORCE_FILL_AND_KILL":
+        normalized_tif = {
+            "FILL_AND_KILL": "TIME_IN_FORCE_FILL_AND_KILL",
+            "TIME_IN_FORCE_FILL_AND_KILL": "TIME_IN_FORCE_FILL_AND_KILL",
+        }.get(time_in_force)
+        if normalized_tif is None:
             return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
                                "UNKNOWN", "UNKNOWN",
                                code="BROKER_REPORT_RECOVERY_REQUIRES_FAK")
@@ -815,7 +819,7 @@ class TBankTradingAdapter:
                 commission_currency="RUB", code="BROKER_REPORT_PROVES_ZERO_FILL_FAK",
                 order_type="ORDER_TYPE_LIMIT",
                 limit_price=_price(limit_price) if limit_price is not None else None,
-                time_in_force=time_in_force)
+                time_in_force=normalized_tif)
 
         fills, total_lots, weighted = [], 0, Decimal("0")
         commission, commission_currency = Decimal("0"), None
@@ -868,7 +872,7 @@ class TBankTradingAdapter:
             code="BROKER_REPORT_RECOVERED_TERMINAL_ORDER",
             order_type="ORDER_TYPE_LIMIT",
             limit_price=_price(limit_price) if limit_price is not None else None,
-            time_in_force=time_in_force)
+            time_in_force=normalized_tif)
 
     def get_order_book(self, instrument_uid, depth=1):
         uid = _uuid(instrument_uid, "INVALID_INSTRUMENT_UID")
