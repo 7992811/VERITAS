@@ -38,7 +38,17 @@ def load_r80(name, namespace, *, legacy=False):
             isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
             and n.value.value is None and
             {t.id for t in n.targets if isinstance(t, ast.Name)} == released)]
-    ns = {'COMMISSION': .0004, 'VC': VC, 'VPS': VPS, 'json': json, **namespace}
+    def decode_payload(value):
+        if isinstance(value,dict):
+            return dict(value)
+        if not value:
+            return {}
+        try:
+            return json.loads(value)
+        except Exception:
+            return {}
+    ns = {'COMMISSION': .0004, 'VC': VC, 'VPS': VPS, 'json': json,
+          '_v90j_json': decode_payload, **namespace}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(RUNTIME), 'exec'), ns)
     return ns[name]
 
