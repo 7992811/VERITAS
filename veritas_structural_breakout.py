@@ -21,6 +21,7 @@ import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
 from veritas_quote_time import quote_gate
 import veritas_structural_validation_cache as SVC
+import veritas_event_impulse as VEI
 
 
 VERSION = "CAUSAL_QUOTE_STRUCTURE_V1"
@@ -61,6 +62,7 @@ _SEALED_FIELDS = (
     "stop_price", "atr", "atr_proof", "atr_observed_until", "target_price",
     "runner_target_price", "target_ladder", "target_zones", "policy",
 )
+_IMPULSE_SEALED_FIELDS = ("intrabar_volatility_shock", "senior_level_break", "game_changer_extreme")
 
 
 def _number(value):
@@ -424,7 +426,10 @@ def _event_id(asset, horizon, source, trigger, leg_id):
 
 
 def _seal(event):
-    return _digest({key: event.get(key) for key in _SEALED_FIELDS})
+    # Preserve historical hashes; new impulse fields are sealed only for events
+    # created with the v2 annotation present.
+    fields = _SEALED_FIELDS + _IMPULSE_SEALED_FIELDS if any(k in event for k in _IMPULSE_SEALED_FIELDS) else _SEALED_FIELDS
+    return _digest({key: event.get(key) for key in fields})
 
 
 def _leg_for(direction, trigger, structural_tf, levels, atr, previous_leg, quote, policy):
@@ -643,6 +648,11 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
                        timeframes=list(z["timeframes"]), available_at=z["available_at"],
                        kind="TP1" if i == 0 else "TP2") for i, (z, f) in enumerate(zip(selected, fractions))]
         old_leg_id = (leg or {}).get("leg_id")
+        last_closed_price = _number(trigger_rows[-1].get("close"))
+        volatility_shock = VEI.quote_shock(last_closed_price, quote["price"], atr_by_tf)
+        senior_level_break = bool(TS.timeframe_seconds(trigger["timeframe"]) > TS.timeframe_seconds(horizon))
+        game_changer = bool(senior_level_break and volatility_shock.get("eligible") is True
+                            and volatility_shock.get("severity") == "GAME_CHANGER_EXTREME")
         event = {"version": VERSION, "event_type": EVENT_TYPE, "asset": asset,
                  "direction": direction, "timeframe": horizon,
                  "trigger_timeframe": trigger["timeframe"], "structural_timeframe": structural_tf,
@@ -663,6 +673,9 @@ def build_context(raw, horizon, now=None, base_context=None, *, state=None, conf
                  "target_ladder": ladder, "target_zones": deepcopy(selected), "policy": deepcopy(policy),
                  "spent": False, "spent_reason": None, "spent_at": None,
                  "activity_basis": "VERIFIED_EXCHANGE_QUOTE", "activity_confirmed": True,
+                 "intrabar_volatility_shock": deepcopy(volatility_shock),
+                 "senior_level_break": senior_level_break,
+                 "game_changer_extreme": game_changer,
                  "session_gap": as_of - reference["observed_at"] > seconds,
                  "breakout_bar_at": trigger_rows[-1]["available_at"],
                  "trigger_pivot_at": trigger["pivot_at"], "level_available_at": trigger["available_at"],
