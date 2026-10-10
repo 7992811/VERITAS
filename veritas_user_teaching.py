@@ -27,6 +27,19 @@ TREND_DAY_SOURCE_TIMESTAMP = "2026-10-09T11:31:00Z"
 TREND_DAY_USER_AUTHORIZATION_RU = "Продолжай"
 EVENT_IMPULSE_TEACHING_ID = "USER_EVENT_IMPULSE_MAX_CAPTURE_2026_10_10"
 EVENT_IMPULSE_SOURCE_TIMESTAMP = "2026-10-10T06:59:00Z"
+MOEX_2146_TEACHING_ID = "USER_MOEX_INTRABAR_GAME_CHANGER_2026_10_10"
+MOEX_2146_SOURCE_TIMESTAMP = "2026-10-10T08:07:00Z"
+MOEX_2146_USER_CORRECTION_RU = (
+    "Исправление P0: по кейсу MOEX 09.10.2026 LONG был подтвержден не в 21:58, "
+    "а уже в 21:46 МСК, когда формирующаяся минутная свеча свежей котировкой "
+    "пробила ранее известные локальные максимумы старшего контекста и ее "
+    "внутриминутное движение превысило типичную волатильность предыдущих 1m/5m "
+    "и даже 1h свечей. Закрытие минутной свечи, SUPER_LONG, новости и 21:58 "
+    "не являются условием первого входа. Такой senior-break + multi-TF "
+    "volatility shock классифицируется GAME_CHANGER_EXTREME и немедленно "
+    "запрашивает максимально разрешенный портфелем объем с учетом стоп-риска. "
+    "Фиксированный тейк не выставляется до структурного затухания импульса."
+)
 EVENT_IMPULSE_USER_CORRECTION_RU = (
     "Вчерашняя ситуация с отработкой импульса крайне плохая и критична для VERITAS. "
     "При резком импульсе с пробоем предыдущих локальных максимумов на объёмах и "
@@ -412,6 +425,44 @@ def event_impulse_policy_snapshot():
     }
 
 
+def moex_2146_game_changer_snapshot():
+    """Owner correction: 21:46 is the causal confirmation, not 21:58."""
+    policy=_copy((CTC.TREND_ACCELERATION_POLICY.get("event_impulse") or {}))
+    return {
+        "teaching_id":MOEX_2146_TEACHING_ID,
+        "source_type":"USER_AUTHORED_P0_CANONICAL_CORRECTION",
+        "source_timestamp":MOEX_2146_SOURCE_TIMESTAMP,
+        "source_timestamp_precision":"MINUTE",
+        "source_text_ru":MOEX_2146_USER_CORRECTION_RU,
+        "status":"ACTIVE_OWNER_P0_CANONICAL",
+        "priority":"P0_HIGHEST",
+        "parent_teaching_id":EVENT_IMPULSE_TEACHING_ID,
+        "ctc_version":CTC.VERSION,
+        "runtime_authority":CTC.BASIS_RUNTIME,
+        "scope":"ALL_CONFIGURED_MODEL_PORTFOLIOS_ON_ALLOWED_ASSETS",
+        "execution_policy":policy,
+        "requirements":{
+            "confirmation_time":"The causal confirmation is the verified quote crossing the senior level at 21:46, not the later 21:58 closed/derived signal.",
+            "forming_bar":"Do not wait for the forming 1m candle to close when its verified move already exceeds completed multi-timeframe volatility.",
+            "size":"GAME_CHANGER_EXTREME requests the portfolio maximum immediately, still bounded by stop-risk, drawdown, source and gross limits.",
+            "news":"News is searched immediately after the price shock and strengthens HOLD; it does not gate the first entry.",
+            "take_profit":"No fixed take-profit while the game-changing impulse remains structurally active.",
+        },
+        "parameter_validation":{
+            "status":"OWNER_P0_CANONICAL_NO_ADDITIONAL_PROOF",
+            "additional_proof_required":False,
+        },
+        "case_anchor":{
+            "asset":"MOEX","date":"2026-10-09","timezone":"Europe/Moscow",
+            "causal_confirmation_time":"21:46",
+            "late_confirmation_rejected":"21:58",
+        },
+        "storage":{"table":"ledger_events","event_type":EVENT_TYPE,
+                   "entity_key":MOEX_2146_TEACHING_ID,
+                   "event_key":EVENT_TYPE+":"+MOEX_2146_TEACHING_ID},
+    }
+
+
 def observation_integrity_policy_snapshot():
     return {
         "teaching_id":OBSERVATION_INTEGRITY_TEACHING_ID,
@@ -444,6 +495,7 @@ def seed_all_user_teachings(pg_event, read_event=None):
             for payload in (policy_snapshot(), ma_policy_snapshot(),
                             breakout_policy_snapshot(), acceleration_policy_snapshot(),
                             trend_day_efficiency_snapshot(), event_impulse_policy_snapshot(),
+                            moex_2146_game_changer_snapshot(),
                             observation_integrity_policy_snapshot())]
 
 
