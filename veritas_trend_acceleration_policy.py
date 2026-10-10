@@ -43,6 +43,11 @@ TREND_ACCELERATION_POLICY = {
         "additional_proof_required": False,
         "entry_requires_news": False,
         "news_confirmation_role": "HOLD_AND_SCALE_CONFIRMATION",
+        "game_changer_immediate_max": True,
+        "game_changer_requires_senior_level_break": True,
+        "game_changer_requires_move_above_completed_1h_volatility": True,
+        "forming_bar_close_required": False,
+        "game_changer_role": "IMMEDIATE_MAX_ALLOWED_BY_PORTFOLIO_AND_STOP_RISK",
         "accepted_regimes": ("UPTREND_HIGH_VOL", "DOWNTREND_HIGH_VOL"),
         "accepted_fast_tiers": ("LONG", "SUPER_LONG", "SHORT", "SUPER_SHORT"),
         "minimum_structure_score": 0.90,
@@ -63,11 +68,14 @@ TREND_ACCELERATION_POLICY = {
             "RISK_HARD_STOP", "PORTFOLIO_HARD_STOP",
         ),
         "principle": (
-            "A sharp high-volume/activity breakout with volatility expansion is "
-            "an event impulse even before the catalyst headline is identified. "
-            "Enter on the verified price/structure event, scale as independent "
-            "confirmations arrive, use news to strengthen hold conviction, and "
-            "do not execute a fixed take-profit while the impulse remains active."
+            "A sharp breakout is confirmed at the verified quote, not at the close "
+            "of the forming candle. If a forming fast candle crosses a previously "
+            "known senior structural high/low and its move already exceeds completed "
+            "1m/5m/1h volatility, classify GAME_CHANGER_EXTREME and request the "
+            "maximum portfolio exposure permitted by stop-risk immediately. "
+            "Less extreme event impulses may scale in stages. News strengthens hold "
+            "conviction but never delays the first structural entry. Do not execute "
+            "a fixed take-profit while the impulse remains active."
         ),
     },
     "profit_protection": {
