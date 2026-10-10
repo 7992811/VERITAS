@@ -506,6 +506,26 @@ class CurrencyTradingCoordinator:
                             result = self.adapter.reconcile_submission(
                                 self.account_id, proposal["client_order_id"])
                             lookup = "client_order_id_fallback"
+                            if (result.status == "UNKNOWN"
+                                    and getattr(result, "code", None) == "ORDER_NOT_FOUND_UNRESOLVED"):
+                                recovered = self.adapter.recover_submission_from_operations(
+                                    self.account_id, terms.get("instrument_uid"),
+                                    proposal["client_order_id"], terms.get("side"),
+                                    integer(terms["lots"]),
+                                    proposal.get("send_started_at") or proposal.get("approved_at")
+                                    or proposal.get("created_at"))
+                                if recovered.status != "UNKNOWN":
+                                    # The broker's current operation ID is only a
+                                    # recovery alias. Preserve the immutable broker
+                                    # order ID recorded from the original PostOrder;
+                                    # the exact request UUID proves identity.
+                                    if recovered.client_order_id != proposal["client_order_id"]:
+                                        raise TradePlanBlocked("HISTORICAL_RECOVERY_REQUEST_ID_MISMATCH")
+                                    result = replace(recovered, broker_order_id=proposal["broker_order_id"])
+                                    lookup = "operations_history_request_uuid"
+                                else:
+                                    result = recovered
+                                    lookup = "operations_history"
                     else:
                         # Read-only recovery path. It converts an explicit broker 404
                         # into an UNKNOWN OrderResult with a stable diagnostic code
