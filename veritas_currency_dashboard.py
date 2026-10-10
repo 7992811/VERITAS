@@ -494,6 +494,38 @@ def _portfolio(account, active, closed_trades, multiplier, checked_at, environme
             Decimal("100") * Decimal(1 if signed > 0 else -1) * (mark/average - 1)
             if mark is not None and average is not None and average > 0 else None
         )
+        excursion_entry = _decimal(account.get("excursion_entry_price"))
+        excursion_mfe = _decimal(account.get("mfe_price"))
+        excursion_mae = _decimal(account.get("mae_price"))
+        excursion_direction = str(account.get("excursion_direction") or "")
+        mfe_pct = mae_pct = giveback_pct = None
+        if (excursion_entry is not None and excursion_entry > 0
+                and excursion_mfe is not None and excursion_mae is not None
+                and excursion_direction in ("LONG","SHORT")):
+            if excursion_direction == "LONG":
+                mfe_pct = max(ZERO, Decimal("100")*(excursion_mfe-excursion_entry)/excursion_entry)
+                mae_pct = max(ZERO, Decimal("100")*(excursion_entry-excursion_mae)/excursion_entry)
+            else:
+                mfe_pct = max(ZERO, Decimal("100")*(excursion_entry-excursion_mfe)/excursion_entry)
+                mae_pct = max(ZERO, Decimal("100")*(excursion_mae-excursion_entry)/excursion_entry)
+            if move_pct is not None:
+                giveback_pct = max(ZERO, mfe_pct-max(ZERO, move_pct))
+        management_shadow = {
+            "version":"CURRENCY_LIVE_MANAGEMENT_SHADOW_V1",
+            "mode":"SHADOW_ONLY_NO_EXECUTION_CHANGE",
+            "mfe_threshold_pct_points":0.15,
+            "mfe_threshold_reached":bool(mfe_pct is not None and mfe_pct >= Decimal("0.15")),
+            "mfe_pct":float(mfe_pct) if mfe_pct is not None else None,
+            "mae_pct":float(mae_pct) if mae_pct is not None else None,
+            "current_move_pct":float(move_pct) if move_pct is not None else None,
+            "giveback_pct":float(giveback_pct) if giveback_pct is not None else None,
+            "profit_protection_candidate":bool(mfe_pct is not None and mfe_pct >= Decimal("0.15")),
+            "dynamic_tp_review_candidate":bool(
+                mfe_pct is not None and mfe_pct >= Decimal("0.15")
+                and giveback_pct is not None and giveback_pct >= Decimal("0.10")
+            ),
+            "automatic_action":False,
+        }
         mark_age = None
         checked_dt = _dt(checked_at)
         if mark_at is not None and checked_dt is not None:
@@ -519,6 +551,14 @@ def _portfolio(account, active, closed_trades, multiplier, checked_at, environme
             "notional_rub": float(notional) if notional is not None else None,
             "unrealized_pnl_rub": float(unrealized) if unrealized is not None else None,
             "unrealized_return_pct": float(move_pct) if move_pct is not None else None,
+            "mfe_pct": float(mfe_pct) if mfe_pct is not None else None,
+            "mae_pct": (-float(mae_pct)) if mae_pct is not None else None,
+            "live_giveback_pct": float(giveback_pct) if giveback_pct is not None else None,
+            "management_evidence_status": (
+                "DURABLE_LIVE_PATH" if mfe_pct is not None and mae_pct is not None
+                else "INCOMPLETE_LIVE_PATH"
+            ),
+            "currency_live_management_shadow": management_shadow,
             "realized_gross_pnl_rub": float(active_realized),
             "trade_fees_rub": float(active_fees) if active_fees is not None else None,
             "trade_funding_rub": float(active_funding) if active_funding is not None else None,
@@ -548,6 +588,10 @@ def _portfolio(account, active, closed_trades, multiplier, checked_at, environme
                 "stop_price": held["stop_price"],
                 "target_price": held["target_price"],
                 "execution_timeframe": held["horizon"],
+                "currency_live_management_shadow": management_shadow,
+                "mfe_pct": float(mfe_pct) if mfe_pct is not None else None,
+                "mae_pct": (-float(mae_pct)) if mae_pct is not None else None,
+                "live_giveback_pct": float(giveback_pct) if giveback_pct is not None else None,
             },
         }
 
@@ -663,6 +707,7 @@ def read_live_currency_on(connection, *, environment=None, checked_at=None, max_
                    high_water_rub,costs_reconciled,ledger_revision,reconciled_revision,
                    broker_signed_lots,broker_observed_at,last_execution_at,last_mark_price,
                    last_mark_observed_at,bound_at,
+                   excursion_entry_price,excursion_direction,mfe_price,mae_price,excursion_started_at,
                    held_terms->>'stop_price' AS held_stop_price,
                    held_terms->>'target_price' AS held_target_price,
                    held_terms->>'horizon' AS held_horizon,
