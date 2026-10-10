@@ -47,6 +47,28 @@ class CurrencyLiveLearningTests(unittest.TestCase):
         self.assertFalse(row["learning_eligible"])
         self.assertFalse(row["shadow_candidate"])
 
+    def test_dynamic_tp_candidate_requires_active_same_direction_impulse_proof(self):
+        t=trade()
+        t["payload"]={**t["payload"],
+            "exit_reason":"STRATEGY_TARGET_REACHED",
+            "currency_dynamic_tp_shadow_at_exit":{
+                "version":"CURRENCY_DYNAMIC_TP_SHADOW_V1",
+                "same_direction_impulse_active":True,
+                "defer_fixed_take_profit":True,
+                "automatic_action":False,
+            }}
+        row=L.classify(t)
+        self.assertTrue(row["shadow_candidate"])
+        self.assertIn("CURRENCY_DYNAMIC_TP_SHADOW_CANDIDATE",row["attributions"])
+        self.assertEqual(row["primary_attribution"],"CURRENCY_DYNAMIC_TP_SHADOW_CANDIDATE")
+        self.assertFalse(row["payload"]["automatic_action"])
+
+    def test_dynamic_tp_is_not_inferred_from_giveback_without_impulse_proof(self):
+        t=trade()
+        t["payload"]={**t["payload"],"exit_reason":"STRATEGY_TARGET_REACHED"}
+        row=L.classify(t)
+        self.assertNotIn("CURRENCY_DYNAMIC_TP_SHADOW_CANDIDATE",row["attributions"])
+
     def test_cost_drag_is_kept_separate_from_direction_error(self):
         row=L.classify(trade(gross_pnl_rub=10.0,net_pnl_rub=-5.0))
         self.assertEqual(row["primary_attribution"],"COST_DRAG")
