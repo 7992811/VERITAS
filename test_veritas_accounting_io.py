@@ -283,9 +283,10 @@ class AccountingIOTests(unittest.TestCase):
 
 
 class SnapshotCursor:
-    def __init__(self, one=None, all_rows=None):
+    def __init__(self, one=None, all_rows=None, rowcount=-1):
         self._one = one
         self._all = list(all_rows or [])
+        self.rowcount = rowcount
     def fetchone(self):
         return deepcopy(self._one)
     def fetchall(self):
@@ -306,10 +307,12 @@ class SnapshotConnection:
             return SnapshotCursor(all_rows=self.positions)
         if query.startswith('UPDATE paper_positions'):
             self.positions[0]['units']=2.
-            return SnapshotCursor()
+            return SnapshotCursor(rowcount=1)
         if query.startswith('UPDATE paper_portfolios'):
             self.portfolio['initial_nav_rub']=900_000
-            return SnapshotCursor()
+            return SnapshotCursor(rowcount=1)
+        if query.startswith('DELETE FROM paper_positions WHERE 1=0'):
+            return SnapshotCursor(rowcount=0)
         raise AssertionError(query)
 
 
@@ -335,6 +338,15 @@ class AccountingSnapshotCacheTests(unittest.TestCase):
         connection.execute('UPDATE paper_positions SET units=%s WHERE portfolio_name=%s',(2.,'Champion'))
         self.assertEqual(connection.portfolio_rows('Champion')[1][0]['units'],2.)
         self.assertEqual(len(raw.calls),5)
+
+    def test_proven_noop_write_keeps_cached_snapshot(self):
+        raw=SnapshotConnection()
+        connection=AIO.AccountingConnection(raw)
+        connection.portfolio_rows('Champion')
+        before=len(raw.calls)
+        connection.execute('DELETE FROM paper_positions WHERE 1=0')
+        connection.portfolio_rows('Champion')
+        self.assertEqual(len(raw.calls),before+1)
 
     def test_portfolio_write_and_data_modifying_cte_invalidate_cache(self):
         raw=SnapshotConnection()
