@@ -15,6 +15,7 @@ import veritas_strategy_roles as VROLE
 import veritas_timeframe_policy as TFP
 import veritas_stop_risk as VSR
 import veritas_admission_trace as VAT
+import veritas_event_impulse as VEI
 
 VERSION=CTC.BASIS_RUNTIME
 TRIGGER_HORIZONS=("1m","5m","1h","4h")
@@ -134,6 +135,8 @@ def _fraction(policy, drawdown, soft=False):
         return 0.0,rg
     f*=float(rg.get("multiplier") or 0.0)
     cap=float(p.get("max_fraction") or p.get("max_single_asset_fraction") or p.get("max_gross") or 1.0)
+    cap=VEI.effective_cap(p.get("_row") or {},p,cap)
+    f=VEI.requested_fraction(p.get("_row") or {},p,rg,f,cap,soft=soft)
     step=float(p.get("position_step") or 0.05)
     f=min(f,cap)
     return max(0.0,math.floor(f/step+1e-9)*step),rg
