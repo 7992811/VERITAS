@@ -250,6 +250,11 @@ def prepare_row(row, price=None, now=None):
                         fixed_take_profit_deferred=bool(event.get('game_changer_extreme')),
                         target_reference_only=bool(event.get('game_changer_extreme')),
                         event_impulse_exit_mode=('STRUCTURAL_EXHAUSTION_ONLY' if event.get('game_changer_extreme') else None),
+                        execution_style=('MARKETABLE_LIMIT_NEAREST_OFFER_SWEEP' if event.get('game_changer_extreme') else None),
+                        fill_confirmation_required=bool(event.get('game_changer_extreme')),
+                        partial_fill_policy=('REQUOTE_REMAINDER_WHILE_CANONICAL_ADMISSION_VALID' if event.get('game_changer_extreme') else None),
+                        reprice_policy=('REFRESH_TOP_OF_BOOK_RECHECK_STOP_RISK_AND_ANTI_CHASE' if event.get('game_changer_extreme') else None),
+                        execution_instrument_required=bool(event.get('game_changer_extreme')),
                         take_profit_1=deepcopy(event['target_ladder'][0]),
                         take_profit_2=deepcopy(event['target_ladder'][1]) if len(event['target_ladder'])>1 else None)
     x['trade_plan'] = plan
