@@ -1451,6 +1451,14 @@ function reviewTradeModel(t){
   const missedProfit=replayProven?(explicitMissed!=null?Math.max(0,explicitMissed):(counterfactualPnl!=null&&net!=null?Math.max(0,counterfactualPnl-net):null)):null;
   const signalEntry=deepNum(root,['entry_reference_price','trigger_level','breakout_level','entry_level']);
   const addPrice=deepNum(root,['last_add_price','add_fill_price','scale_in_price']);
+  const addCount=deepNum(root,['add_count']);
+  const mfeBeforeAdd=deepNum(root,['mfe_before_last_add_pct']);
+  const mfeSinceAdd=deepNum(root,['mfe_since_last_add_pct']);
+  const maeSinceAdd=deepNum(root,['mae_since_last_add_pct']);
+  const initialStop=deepNum(root,['initial_stop_price']);
+  const exitEffectiveStop=deepNum(root,['exit_effective_stop_price']);
+  const initialTrancheNet=deepNum(root,['initial_tranche_final_exit_net_proxy_rub']);
+  const initialTrancheBasis=deepText(root,['initial_tranche_counterfactual_basis']);
   const protectionTrigger=mfe!=null&&mfe>=0.15&&net!=null&&net<=0;
   let status='В опыте',statusClass='',lesson='';
   if(String(attr||'').startsWith('PROVEN_')){status='Подтверждено';statusClass='bad';lesson=reviewAttrLabel(attr)+'. Исправление должно проходить через проверку правила и повторную валидацию.'}
@@ -1460,7 +1468,7 @@ function reviewTradeModel(t){
   else if(net!=null&&net<0){lesson='Убыточный исход добавлен в опыт. Причина не повышается до ошибки без достаточной доказательной базы.'}
   else if(net!=null&&net>0){lesson='Прибыльный исход добавлен в опыт как подтверждённый результат фактического исполнения.'}
   else lesson='Сделка сохранена, но итоговые доказательства ещё неполны.';
-  return {t,p,net,mfe,mae,capture,attr,action,replayProven,counterfactualPnl,counterfactualReturn,counterfactualExit,missedProfit,signalEntry,addPrice,protectionTrigger,status,statusClass,lesson};
+  return {t,p,net,mfe,mae,capture,attr,action,replayProven,counterfactualPnl,counterfactualReturn,counterfactualExit,missedProfit,signalEntry,addPrice,addCount,mfeBeforeAdd,mfeSinceAdd,maeSinceAdd,initialStop,exitEffectiveStop,initialTrancheNet,initialTrancheBasis,protectionTrigger,status,statusClass,lesson};
 }
 function renderTradeReviewItem(x){
   const t=x.t,p=x.p,stop=t.stop_price??p.stop_price??p.initial_stop_price??p.structural_stop;
@@ -1478,10 +1486,14 @@ function renderTradeReviewItem(x){
       '<div class="review-metric"><span>Захват</span><b>'+capture+'</b></div>'+
       '<div class="review-metric"><span>Вход → выход</span><b>'+pair(entry,exit)+'</b></div>'+
       '<div class="review-metric"><span>Сигнал / добор</span><b>'+assetPrice(t.asset,x.signalEntry)+' / '+assetPrice(t.asset,x.addPrice)+'</b></div>'+
-      '<div class="review-metric"><span>Stop</span><b>'+assetPrice(t.asset,stop)+'</b></div>'+
+      '<div class="review-metric"><span>Доборов</span><b>'+(x.addCount==null?'—':n(x.addCount,0))+'</b></div>'+
+      '<div class="review-metric"><span>MFE до / после ADD</span><b>'+pct(x.mfeBeforeAdd)+' / '+pct(x.mfeSinceAdd)+'</b></div>'+
+      '<div class="review-metric"><span>MAE после ADD</span><b>'+pct(x.maeSinceAdd)+'</b></div>'+
+      '<div class="review-metric"><span>Stop исходный / выход</span><b>'+assetPrice(t.asset,x.initialStop??stop)+' / '+assetPrice(t.asset,x.exitEffectiveStop)+'</b></div>'+
+      '<div class="review-metric"><span>Начальная транша без ADD</span><b class="'+tone(x.initialTrancheNet)+'">'+(x.initialTrancheNet==null?'—':rub(x.initialTrancheNet))+'</b></div>'+
       '<div class="review-metric"><span>Упущено доказано</span><b>'+missed+'</b></div>'+
       '<div class="review-metric"><span>Контрфакт</span><b>'+esc(evidence)+'</b></div>'+
-    '</div><div class="review-lesson"><b>'+esc(attr)+':</b> '+esc(x.lesson)+'</div></div>';
+    '</div><div class="review-lesson"><b>'+esc(attr)+':</b> '+esc(x.lesson)+(x.initialTrancheBasis?' <span class="review-inline-note">· '+esc(x.initialTrancheBasis)+'</span>':'')+'</div></div>';
 }
 function aggregateClosedTradeEvidence(learning2){
   const assets=learning2&&learning2.assets&&typeof learning2.assets==='object'?learning2.assets:{};
@@ -1581,6 +1593,19 @@ function hypothesisEffectHtml(h,r){
   }
   return '';
 }
+function ownerReviewQueue(learning2){
+  const hs=Array.isArray(learning2&&learning2.hypotheses)?learning2.hypotheses:[];
+  const registry=learning2&&learning2.registry||{},cands=Array.isArray(registry.candidates)?registry.candidates:[];
+  const byId=new Map(hs.map(h=>[h.hypothesis_id,h]));
+  return cands.filter(x=>String(x&&x.status||'').toUpperCase()==='SHADOW_ELIGIBLE')
+    .map(x=>({candidate:x,hypothesis:byId.get(x.candidate_id)||null}));
+}
+function renderOwnerReviewQueue(learning2){
+  const rows=ownerReviewQueue(learning2);
+  return '<section class="review-section"><h3>На утверждение владельца</h3><div class="review-section-note">Только кандидаты, уже прошедшие shadow-порог. Они не меняют production без вашего решения.</div>'+
+    (rows.length?rows.map(({candidate:r,hypothesis:h})=>{const s=(h&&h.scope)||{},title=h?reviewKindLabel(h.kind):'Кандидат правила',scope=[lab(s.asset),tfRu(s.horizon),s.regime].filter(Boolean).join(' · ');return '<div class="review-hypothesis"><div class="review-hypothesis-head"><div><b>'+esc(title)+'</b><small>'+esc(scope||r.candidate_id||'')+'</small></div><span class="review-status warn">Нужно решение</span></div><div class="review-rule">'+esc(h?hypothesisRuleText(h):'Кандидат прошёл shadow-проверку и ожидает ручной верификации владельца.')+'</div><small>ID: '+esc(r.candidate_id||'—')+' · production: без изменений до утверждения.</small></div>'}).join(''):'<div class="msg">Кандидатов, прошедших shadow и ожидающих вашего решения, сейчас нет.</div>')+
+    '</section>';
+}
 function renderHypothesesSection(learning2){
   const hs=Array.isArray(learning2&&learning2.hypotheses)?learning2.hypotheses:[];
   const registry=learning2&&learning2.registry||{},cands=Array.isArray(registry.candidates)?registry.candidates:[];
@@ -1597,6 +1622,7 @@ function renderReview(){
   const a=st.autonomous||{},l2=a.learning_v2||{},missed=aggregateMissed(l2),closed=aggregateClosedTradeEvidence(l2);
   const hypotheses=Array.isArray(l2.hypotheses)?l2.hypotheses:[];
   const registry=l2.registry||{},shadow=Array.isArray(registry.shadow_champions)?registry.shadow_champions.length:0;
+  const ownerQueue=ownerReviewQueue(l2);
   const autoCandidates=(Array.isArray(a.candidates)?a.candidates:[]).filter(x=>['CALIBRATION','SIZE_DOWN_WEAK_SIGNAL','SIZE_DOWN_UNCALIBRATED'].includes(String(x&&x.kind||'')));
   const promoted=autoCandidates.filter(x=>String(x.state||'').toLowerCase()==='promoted'&&x.evidence_valid===true).length;
   const protection=reviews.filter(x=>x.protectionTrigger).length;
@@ -1610,7 +1636,8 @@ function renderReview(){
     '<div class="review-kpi"><span>MFE ≥0,15% → ≤0</span><b class="'+(protection?'warn':'')+'">'+protection+'</b></div>'+
     '<div class="review-kpi"><span>Replay Stop / Exit</span><b>'+closed.stopReady+' / '+closed.exitReady+'</b></div>'+
     '<div class="review-kpi"><span>Упущено / обучаемо</span><b class="'+(missed.missed?'warn':'')+'">'+missed.missed+' / '+missed.learnable+'</b></div>'+
-    '<div class="review-kpi"><span>L2 / авто / подтвержд.</span><b>'+hypotheses.length+' / '+autoCandidates.length+' / '+promoted+'</b></div></div>';
+    '<div class="review-kpi"><span>L2 / авто / подтвержд.</span><b>'+hypotheses.length+' / '+autoCandidates.length+' / '+promoted+'</b></div>'+
+    '<div class="review-kpi"><span>На утверждение</span><b class="'+(ownerQueue.length?'warn':'')+'">'+ownerQueue.length+'</b></div></div>';
   if(!$('reviewBody'))return;
   const authority=closed.outcome?
     ('Исход '+closed.outcome+' · path '+closed.path+' · outcome-only '+closed.outcomeOnly+
@@ -1619,7 +1646,7 @@ function renderReview(){
     :'Evidence-tier по закрытым сделкам обновляется.';
   const trades='<section class="review-section"><h3>Закрытые сделки · плотный разбор</h3><div class="review-section-note">'+esc(authority)+' · MFE/MAE не восстанавливаются из неполного пути.</div>'+(reviews.length?'<div class="review-list">'+reviews.slice(0,24).map(renderTradeReviewItem).join('')+'</div>':'<div class="msg">Закрытых сделок для разбора пока нет.</div>')+'</section>';
   const loop='<section class="review-section"><h3>Контур самообучения</h3><div class="review-flow"><span class="review-chip">Фиксация</span><i>→</i><span class="review-chip">Диагностика</span><i>→</i><span class="review-chip">Future validation</span><i>→</i><span class="review-chip">Replay / Shadow</span><i>→</i><span class="review-chip">Production candidate</span></div><div class="review-foot">Одно наблюдение правило не меняет. Outcome-only может обучать денежный результат/размер и запускать bounded replay; прямые MFE/MAE требуют path evidence. '+esc(learningWaitText(a))+'</div></section>';
-  $('reviewBody').innerHTML='<div class="review-grid"><div>'+trades+renderMissedSection(l2,missed)+'</div><div>'+renderAutonomousTradeLearning(a)+renderHypothesesSection(l2)+loop+'</div></div>';
+  $('reviewBody').innerHTML='<div class="review-grid"><div>'+trades+renderMissedSection(l2,missed)+'</div><div>'+renderOwnerReviewQueue(l2)+renderAutonomousTradeLearning(a)+renderHypothesesSection(l2)+loop+'</div></div>';
 }
 
 function learningWaitText(a){
