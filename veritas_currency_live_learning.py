@@ -46,16 +46,27 @@ def classify(trade):
     path = p.get("management_evidence_status") == "DURABLE_LIVE_PATH"
     shadow = p.get("currency_live_management_shadow")
     shadow = shadow if isinstance(shadow, dict) else {}
+    dynamic_tp = p.get("currency_dynamic_tp_shadow_at_exit")
+    dynamic_tp = dynamic_tp if isinstance(dynamic_tp, dict) else {}
+    exit_reason = str(p.get("exit_reason") or t.get("exit_reason") or "").upper()
 
     attrs = []
     if gross is not None and net is not None and gross > 0 >= net:
         attrs.append("COST_DRAG")
-    candidate = bool(
+    management_candidate = bool(
         model and path and mfe is not None and mfe >= 0.15
         and giveback is not None and giveback >= 0.10
     )
-    if candidate:
+    dynamic_tp_candidate = bool(
+        model and path and exit_reason == "STRATEGY_TARGET_REACHED"
+        and dynamic_tp.get("same_direction_impulse_active") is True
+        and dynamic_tp.get("defer_fixed_take_profit") is True
+    )
+    candidate = management_candidate or dynamic_tp_candidate
+    if management_candidate:
         attrs.append("CURRENCY_MANAGEMENT_SHADOW_CANDIDATE")
+    if dynamic_tp_candidate:
+        attrs.append("CURRENCY_DYNAMIC_TP_SHADOW_CANDIDATE")
     if model and path and net is not None and net > 0 and capture is not None and capture >= 0.60:
         attrs.append("GOOD_EXECUTION")
     if not attrs:
@@ -64,7 +75,8 @@ def classify(trade):
     eligible = bool(model and path and net is not None and mfe is not None and mae is not None)
     primary = (
         "COST_DRAG" if "COST_DRAG" in attrs else
-        "CURRENCY_MANAGEMENT_SHADOW_CANDIDATE" if candidate else
+        "CURRENCY_DYNAMIC_TP_SHADOW_CANDIDATE" if dynamic_tp_candidate else
+        "CURRENCY_MANAGEMENT_SHADOW_CANDIDATE" if management_candidate else
         "GOOD_EXECUTION" if "GOOD_EXECUTION" in attrs else
         attrs[0]
     )
@@ -75,6 +87,9 @@ def classify(trade):
         "management_evidence_status": p.get("management_evidence_status"),
         "mfe_pct": mfe, "mae_pct": mae, "capture_ratio": capture, "giveback_pct": giveback,
         "management_shadow": shadow,
+        "dynamic_tp_shadow_at_exit": dynamic_tp,
+        "management_shadow_candidate": management_candidate,
+        "dynamic_tp_shadow_candidate": dynamic_tp_candidate,
         "shadow_candidate": candidate,
         "automatic_action": False,
         "promotion_required": ["OOS", "COST_STRESS", "TIME_STABILITY",
