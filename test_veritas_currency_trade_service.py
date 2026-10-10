@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -160,6 +161,13 @@ class TradeHttpRepositoryTests(unittest.TestCase):
             payload.update(body)
         return (application or self.app).handle(
             service.PREFIX + operation, payload, HEADERS if headers is None else headers)
+
+    def wait_reconcile(self, application=None):
+        app = application or self.app
+        deadline = time.monotonic() + 1.0
+        while getattr(app, "_reconcile_inflight", False) and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertFalse(getattr(app, "_reconcile_inflight", False))
 
     def create(self, *, event="http-event", owner_id=OWNER, bot_id=BOT, **changes):
         value = terms(event=event, instrument_uid=service.CNY_UID,
@@ -352,6 +360,7 @@ class TradeHttpRepositoryTests(unittest.TestCase):
             contract_notional=D('12769'), target_lots=0, held_lots=0, max_gross=D('10'))
         with patch.object(self.coordinator, 'prepare_next', side_effect=failure):
             self.assertEqual(self.request('poll')[1], 200)
+        self.wait_reconcile()
         calls = list(self.coordinator.calls)
         facts_calls = list(self.facts.calls)
         observed = self.request('status')[0]
@@ -369,6 +378,7 @@ class TradeHttpRepositoryTests(unittest.TestCase):
         failure, _, _, _ = stale_failure()
         with patch.object(self.coordinator, 'prepare_next', side_effect=failure):
             self.assertEqual(self.request('poll')[1], 200)
+        self.wait_reconcile()
         calls, facts_calls = list(self.coordinator.calls), list(self.facts.calls)
         observed = self.request('status')[0]
         self.assertEqual(observed['last_poll_entry_diagnostics'], failure.entry_diagnostics)
