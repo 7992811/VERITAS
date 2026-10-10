@@ -273,7 +273,7 @@ class AdapterTests(unittest.TestCase):
         result = self.adapter.recover_submission_from_operations(
             ACCOUNT, UID, CLIENT, "BUY", 2, sent)
         self.assertEqual(result.status, "UNKNOWN")
-        self.assertEqual(result.code, "HISTORICAL_ORDER_NOT_FOUND_UNRESOLVED")
+        self.assertEqual(result.code, "HISTORICAL_REQUEST_UUID_NOT_OBSERVED")
         self.assertEqual(self.transport.count("PostOrder"), 0)
 
     def test_invalid_operation_window_and_cursor_fail_before_network(self):
