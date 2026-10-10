@@ -181,18 +181,26 @@ class AccountingConnection:
         else:
             setattr(self._connection, name, value)
 
-    def _invalidate_portfolio_cache_for_query(self, query):
-        if not isinstance(query, str) or not self._portfolio_cache:
-            return
+    def _book_write_query(self, query):
+        if not isinstance(query, str):
+            return False
         bucket = _bucket(query)
         if bucket in ('write_positions', 'write_portfolios'):
-            self._portfolio_cache.clear()
-            return
+            return True
         # Data-modifying CTEs are intentionally outside the lightweight bucket
-        # parser. Fail closed whenever a SQL string can mutate live book rows.
-        if re.search(r'\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(?:[A-Za-z_][A-Za-z_0-9$]*\.)?(?:paper_positions|paper_portfolios)\b',
-                     query, re.IGNORECASE):
-            self._portfolio_cache.clear()
+        # parser. Treat any explicit live-book mutation as cache-relevant.
+        return bool(re.search(
+            r'\b(?:UPDATE|INSERT\s+INTO|DELETE\s+FROM)\s+(?:[A-Za-z_][A-Za-z_0-9$]*\.)?(?:paper_positions|paper_portfolios)\b',
+            query, re.IGNORECASE))
+
+    def _invalidate_portfolio_cache_for_query(self, query, rowcount=None):
+        if not self._portfolio_cache or not self._book_write_query(query):
+            return
+        # PostgreSQL reports zero when an UPDATE ... IS DISTINCT FROM predicate
+        # matched nothing. Keep the snapshot in that exact no-op case.
+        if rowcount == 0:
+            return
+        self._portfolio_cache.clear()
 
     def portfolio_rows(self, name, *, mark_only=False, mark_sql=None):
         """Reuse an unchanged portfolio snapshot inside this accounting call.
@@ -215,10 +223,10 @@ class AccountingConnection:
 
     def execute(self, *args, **kwargs):
         query = args[0] if args else kwargs.get('query')
-        self._invalidate_portfolio_cache_for_query(query)
         bucket = _bucket(query)
         cursor = self._measurements.call('execute', bucket, self._connection.execute,
                                          args, kwargs)
+        self._invalidate_portfolio_cache_for_query(query, getattr(cursor, 'rowcount', None))
         return _AccountingCursor(cursor, self._measurements, bucket)
 
     def cursor(self, *args, **kwargs):
