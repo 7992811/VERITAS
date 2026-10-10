@@ -1005,8 +1005,10 @@ class WholeAccountLiveAdmission:
                 plan, source_gate, history["daily_pnl_pct"], history["weekly_pnl_pct"])
             risk_profile = CTC.currency_live_risk_policy(history["drawdown"])
             entry_mode = str(terms.get("currency_entry_mode") or "")
+            probability_bypass = terms.get("currency_probability_bypass") is True
+            probability_required = terms.get("currency_probability_required") is True
             if entry_mode == "GAME_CHANGER":
-                _require(terms.get("currency_probability_bypass") is True,
+                _require(probability_bypass and not probability_required,
                          "CURRENCY_GAME_CHANGER_BYPASS_PROOF_REQUIRED")
                 probability_policy = {
                     "required": False,
@@ -1016,14 +1018,23 @@ class WholeAccountLiveAdmission:
                     "mode": "GAME_CHANGER_STRUCTURAL_BYPASS",
                 }
             else:
-                _require(entry_mode == "NORMAL" and terms.get("currency_probability_required") is True,
+                # Canonical Currency admission owns the trading thesis. A signed
+                # NORMAL structural entry may intentionally mark calibration as
+                # sizing-only. LIVE independently rechecks source, economics,
+                # promotion, broker/account state and risk, but must not restore
+                # a probability veto that canonical admission explicitly removed.
+                _require(entry_mode == "NORMAL",
+                         "CURRENCY_NORMAL_ROLE_PROOF_REQUIRED")
+                structural_bypass = probability_bypass and not probability_required
+                legacy_calibrated = probability_required and not probability_bypass
+                _require(structural_bypass or legacy_calibrated,
                          "CURRENCY_NORMAL_ROLE_PROOF_REQUIRED")
                 probability_policy = {
-                    "required": True,
-                    "expectancy_required": True,
+                    "required": False if structural_bypass else True,
+                    "expectancy_required": False if structural_bypass else True,
                     "minimum_probability": float(terms.get("currency_probability_threshold") or
                                                  CTC.PORTFOLIO_POLICIES["Currency"]["threshold"]),
-                    "mode": "NORMAL_CALIBRATED",
+                    "mode": "NORMAL_STRUCTURAL_AUTHORITY" if structural_bypass else "NORMAL_CALIBRATED_LEGACY",
                 }
             gate = LIVE.authorize_candidate(candidate, current, correlations, registry, evidence,
                 durable_storage=True, broker_reconciled=True, kill_switch=history["kill_switch"],
