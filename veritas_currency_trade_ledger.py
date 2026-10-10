@@ -744,10 +744,16 @@ class CurrencyTradeLedger:
                 "mfe_price":row.get("mfe_price"), "mae_price":row.get("mae_price"),
                 "excursion_started_at":row.get("excursion_started_at"),
                 "mfe_pct":(
-                    (abs(exact(row["mfe_price"])-exact(row["excursion_entry_price"])) /
-                     exact(row["excursion_entry_price"]) * 100)
+                    max(ZERO, (
+                        (exact(row["mfe_price"])-exact(row["excursion_entry_price"]))
+                        if row.get("excursion_direction") == "LONG"
+                        else (exact(row["excursion_entry_price"])-exact(row["mfe_price"]))
+                    ) / exact(row["excursion_entry_price"]) * 100)
                     if row.get("mfe_price") is not None and row.get("excursion_entry_price") is not None else None),
                 "mae_pct":(
-                    (abs(exact(row["mae_price"])-exact(row["excursion_entry_price"])) /
-                     exact(row["excursion_entry_price"]) * 100)
+                    max(ZERO, (
+                        (exact(row["excursion_entry_price"])-exact(row["mae_price"]))
+                        if row.get("excursion_direction") == "LONG"
+                        else (exact(row["mae_price"])-exact(row["excursion_entry_price"]))
+                    ) / exact(row["excursion_entry_price"]) * 100)
                     if row.get("mae_price") is not None and row.get("excursion_entry_price") is not None else None)}
