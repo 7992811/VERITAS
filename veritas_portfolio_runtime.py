@@ -5128,6 +5128,12 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
         requested=min(requested or float(admission['fraction']),float(admission['fraction']))
 
     cap=float(policy.get('max_fraction') or policy.get('max_single_asset_fraction') or 0.0)
+    impulse=admission.get('event_impulse') or {}
+    if impulse.get('immediate_max') and str(policy.get('mode') or '')!='CURRENCY':
+        caps=(getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('temporary_caps') or {}
+        event_cap=(caps.get(str(policy.get('mode') or '')) or {}).get('max_fraction')
+        if event_cap is not None:
+            cap=max(cap,float(event_cap))
     if cap>0:
         requested=min(requested,cap)
     step=float(policy.get('position_step') or .05)
