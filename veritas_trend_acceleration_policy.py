@@ -6,7 +6,7 @@ sizes require replay/OOS validation; live Currency semantics are excluded.
 """
 
 TREND_ACCELERATION_POLICY = {
-    "version": "CTC_TREND_ACCELERATION_V1",
+    "version": "CTC_TREND_ACCELERATION_V2",
     "teaching_id": "USER_TREND_ACCELERATION_2026_10_09",
     "enabled": True,
     "scope": "PAPER_NON_CURRENCY_PORTFOLIOS",
@@ -17,21 +17,58 @@ TREND_ACCELERATION_POLICY = {
     "fast_horizons": ("1m", "5m"),
     "mid_confirmation_timeframes": ("15m", "30m"),
     "senior_confirmation_timeframes": ("1h", "4h"),
+    # Owner P0 rule, 2026-10-10: on a verified event impulse the first
+    # breakout must establish risk quickly, then every distinct confirmation
+    # earns another step up to the portfolio's maximum permitted exposure.
     "stage_targets_standard": {
-        "FAST_CONFIRMED": 0.25,
-        "MID_CONFIRMED": 0.50,
-        "SENIOR_CONFIRMED": 0.75,
+        "FAST_CONFIRMED": 0.50,
+        "MID_CONFIRMED": 0.75,
+        "SENIOR_CONFIRMED": 1.00,
     },
     "stage_targets_aggressive": {
-        "FAST_CONFIRMED": 0.75,
-        "MID_CONFIRMED": 1.50,
-        "SENIOR_CONFIRMED": 2.50,
+        "FAST_CONFIRMED": 1.50,
+        "MID_CONFIRMED": 3.00,
+        "SENIOR_CONFIRMED": 5.00,
     },
     "temporary_caps": {
-        "IMPULSE_ONLY": {"max_fraction": 0.75, "max_gross": 1.00},
-        "CORE": {"max_fraction": 0.75, "max_gross": 2.00},
-        "CHALLENGER": {"max_fraction": 0.75, "max_gross": 2.00},
-        "AGGRESSIVE": {"max_fraction": 2.50, "max_gross": 5.00},
+        "IMPULSE_ONLY": {"max_fraction": 1.00, "max_gross": 1.00},
+        "CORE": {"max_fraction": 1.00, "max_gross": 2.00},
+        "CHALLENGER": {"max_fraction": 1.00, "max_gross": 2.00},
+        "AGGRESSIVE": {"max_fraction": 5.00, "max_gross": 5.00},
+    },
+    "event_impulse": {
+        "enabled": True,
+        "owner_priority": "P0_HIGHEST",
+        "owner_rule_authority": True,
+        "additional_proof_required": False,
+        "entry_requires_news": False,
+        "news_confirmation_role": "HOLD_AND_SCALE_CONFIRMATION",
+        "accepted_regimes": ("UPTREND_HIGH_VOL", "DOWNTREND_HIGH_VOL"),
+        "accepted_fast_tiers": ("SUPER_LONG", "SUPER_SHORT"),
+        "minimum_structure_score": 0.90,
+        "minimum_independent_evidence": 4,
+        "breakout_required": True,
+        "activity_or_volume_confirmation_required": True,
+        "volatility_expansion_required": True,
+        "relative_volume_floor_if_available": 1.25,
+        "fast_target_standard": 0.50,
+        "fast_target_aggressive": 1.50,
+        "confirmed_target_standard": 1.00,
+        "confirmed_target_aggressive": 5.00,
+        "defer_fixed_take_profit": True,
+        "target_reference_mode": "HIGHER_TIMEFRAME_HIGHS_AND_ZONES",
+        "reassess_targets_after_impulse_exhaustion": True,
+        "exit_authority": (
+            "STRUCTURAL_BREAK", "CONFIRMED_REVERSAL", "TRAILING_STOP",
+            "RISK_HARD_STOP", "PORTFOLIO_HARD_STOP",
+        ),
+        "principle": (
+            "A sharp high-volume/activity breakout with volatility expansion is "
+            "an event impulse even before the catalyst headline is identified. "
+            "Enter on the verified price/structure event, scale as independent "
+            "confirmations arrive, use news to strengthen hold conviction, and "
+            "do not execute a fixed take-profit while the impulse remains active."
+        ),
     },
     "profit_protection": {
         "mfe_activation_pct_points": 0.15,
@@ -68,10 +105,12 @@ TREND_ACCELERATION_POLICY = {
     "principle": (
         "Scale a winning confirmed trend by stop-risk, not nominal allocation. "
         "Each new causal confirmation may earn one larger add; never average a "
-        "loser, never chase after most of the target is spent, and protect prior "
-        "tranches first."
+        "loser. During an active event impulse, a consumed fixed target is a "
+        "continuation/replan trigger rather than a reason to abandon the trend. "
+        "Protect prior tranches first and defer fixed profit taking until the "
+        "impulse structurally exhausts."
     ),
-    "parameter_validation_status": "OWNER_RULE_SHADOW_OOS_REQUIRED",
+    "parameter_validation_status": "OWNER_P0_CANONICAL_NO_ADDITIONAL_PROOF",
 }
 
 
@@ -92,12 +131,12 @@ TREND_DAY_EFFICIENCY_POLICY = {
     "require_mid_confirmation": True,
     "require_senior_confirmation": True,
     "extreme_target_standard": 1.00,
-    "extreme_target_aggressive": 3.50,
+    "extreme_target_aggressive": 5.00,
     "temporary_caps": {
         "IMPULSE_ONLY": {"max_fraction": 1.00, "max_gross": 1.00},
         "CORE": {"max_fraction": 1.00, "max_gross": 2.00},
         "CHALLENGER": {"max_fraction": 1.00, "max_gross": 2.00},
-        "AGGRESSIVE": {"max_fraction": 3.50, "max_gross": 5.00},
+        "AGGRESSIVE": {"max_fraction": 5.00, "max_gross": 5.00},
     },
     "runner": {
         "requires_profit_protection": True,
@@ -114,7 +153,7 @@ TREND_DAY_EFFICIENCY_POLICY = {
             "validation but cannot block or enlarge a paper trade in this version."
         ),
     },
-    "parameter_validation_status": "OWNER_RULE_SHADOW_OOS_REQUIRED",
+    "parameter_validation_status": "OWNER_P0_CANONICAL_NO_ADDITIONAL_PROOF",
     "principle": (
         "The largest allocation is earned only when the existing trend-day "
         "classifier, intraday structure, intermediate timeframes and senior "
