@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 import hashlib
 import json
@@ -926,6 +926,96 @@ class TBankTradingAdapter:
             return result
         except TradingError as exc:
             return self._unknown(body, "ORDER_NOT_FOUND_UNRESOLVED" if exc.not_found else exc.code)
+
+    def recover_submission_from_operations(self, account_id, instrument_uid, client_order_id,
+                                           side, lots, sent_at, *, window_minutes=20,
+                                           max_pages=10, max_candidates=50):
+        """Read only recovery for an order whose saved broker id and request id no longer resolve.
+
+        T-Bank documents that operation IDs may change over time and recommends
+        resolving current operation IDs through GetOperationsByCursor and then
+        querying GetOrderState. A candidate is accepted only when GetOrderState
+        echoes the exact immutable request UUID plus instrument, side and lots.
+        This method never submits, cancels or modifies an order.
+        """
+        account = _identifier(account_id, "INVALID_ACCOUNT_ID")
+        uid = _uuid(instrument_uid, "INVALID_INSTRUMENT_UID")
+        client = _uuid(client_order_id)
+        normalized_side = _side(side)
+        requested_lots = _integer(lots, minimum=1, code="INVALID_LOTS")
+        if type(window_minutes) is not int or not 1 <= window_minutes <= 120:
+            raise TradingError("INVALID_HISTORICAL_RECOVERY_WINDOW")
+        if type(max_pages) is not int or not 1 <= max_pages <= 100:
+            raise TradingError("INVALID_HISTORICAL_RECOVERY_PAGE_LIMIT")
+        if type(max_candidates) is not int or not 1 <= max_candidates <= 200:
+            raise TradingError("INVALID_HISTORICAL_RECOVERY_CANDIDATE_LIMIT")
+        center = datetime.fromisoformat(_timestamp(sent_at))
+        now = datetime.now(timezone.utc)
+        start = center - timedelta(minutes=window_minutes)
+        end = min(now, center + timedelta(minutes=window_minutes))
+        if end <= start:
+            return OrderResult(client, None, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN",
+                               code="HISTORICAL_RECOVERY_WINDOW_NOT_READY")
+
+        cursor, seen_cursors, candidates = "", set(), []
+        for _ in range(max_pages):
+            page = self.get_operations_by_cursor(
+                account, from_time=start, to_time=end, cursor=cursor, limit=1000)
+            for item in page.get("items", []):
+                if item.get("instrumentUid") != uid:
+                    continue
+                operation_id = item.get("id")
+                try:
+                    operation_id = _identifier(operation_id, "INVALID_OPERATION_ID")
+                except TradingError:
+                    continue
+                if operation_id not in candidates:
+                    candidates.append(operation_id)
+                    if len(candidates) > max_candidates:
+                        return OrderResult(client, None, uid, normalized_side, requested_lots, None,
+                                           "UNKNOWN", "UNKNOWN",
+                                           code="HISTORICAL_RECOVERY_AMBIGUOUS")
+            if not page.get("hasNext", False):
+                break
+            following = page.get("nextCursor")
+            if (not isinstance(following, str) or not following or following == cursor
+                    or following in seen_cursors):
+                raise TradingError("OPERATIONS_CURSOR_STALLED")
+            seen_cursors.add(following)
+            cursor = following
+        else:
+            return OrderResult(client, None, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN",
+                               code="HISTORICAL_RECOVERY_PAGE_LIMIT")
+
+        matches = {}
+        for operation_id in candidates:
+            try:
+                observed = self.get_order(account, operation_id)
+            except TradingError as exc:
+                if exc.not_found:
+                    continue
+                return OrderResult(client, None, uid, normalized_side, requested_lots, None,
+                                   "UNKNOWN", "UNKNOWN", code=exc.code)
+            if observed.client_order_id != client:
+                continue
+            if (observed.instrument_uid != uid or observed.side != normalized_side
+                    or observed.lots_requested != requested_lots):
+                return OrderResult(client, None, uid, normalized_side, requested_lots, None,
+                                   "UNKNOWN", "UNKNOWN",
+                                   code="HISTORICAL_RECOVERY_IDENTITY_MISMATCH")
+            key = observed.broker_order_id or operation_id
+            matches[key] = observed
+        if len(matches) == 1:
+            return next(iter(matches.values()))
+        if len(matches) > 1:
+            return OrderResult(client, None, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN",
+                               code="HISTORICAL_RECOVERY_AMBIGUOUS")
+        return OrderResult(client, None, uid, normalized_side, requested_lots, None,
+                           "UNKNOWN", "UNKNOWN",
+                           code="HISTORICAL_ORDER_NOT_FOUND_UNRESOLVED")
 
     def _check_before_send(self, check):
         if check is None:
