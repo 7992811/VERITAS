@@ -864,6 +864,20 @@ class TBankTradingAdapter:
             raise TradingError("ORDER_LOOKUP_IDENTITY_MISMATCH")
         return result
 
+    def get_order_from_operation_id(self, account_id, operation_id):
+        """Read only recovery lookup using a current OperationsService operation id.
+
+        T-Bank documents that operation ids may change and recommends resolving
+        the current operation id with GetOrderState. An operation id is not
+        asserted to be an exchange order id, so orderIdType is deliberately
+        omitted (UNSPECIFIED). Identity is established by the returned
+        orderRequestId and immutable order terms in the coordinator.
+        """
+        account = _identifier(account_id, "INVALID_ACCOUNT_ID")
+        operation = _identifier(operation_id, "INVALID_OPERATION_ID")
+        body = {"accountId": account, "orderId": operation, "priceType": "PRICE_TYPE_POINT"}
+        return self._normalize_order(self._request("order", body), points=True)
+
     def get_order_executions(self, account_id, order_id=None, *, client_order_id=None):
         return self.get_order(account_id, order_id, client_order_id=client_order_id).executions
 
@@ -997,7 +1011,7 @@ class TBankTradingAdapter:
         matches, resolved_states, foreign_requests = {}, 0, 0
         for operation_id in candidates:
             try:
-                observed = self.get_order(account, operation_id)
+                observed = self.get_order_from_operation_id(account, operation_id)
             except TradingError as exc:
                 if exc.not_found:
                     continue
