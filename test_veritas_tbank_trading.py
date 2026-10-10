@@ -220,6 +220,61 @@ class AdapterTests(unittest.TestCase):
                     self.assertIs(call["body"][flag], False)
                 self.assertFalse(adapter.capabilities()["execution_enabled"])
 
+    def test_expired_day_zero_fill_is_proven_by_complete_operations_and_no_active_order(self):
+        sent = datetime.now(timezone.utc) - timedelta(days=2)
+        broker_id = "broker-order-expired-day-ops"
+        with patch.object(self.adapter, "list_orders", return_value=[]), \
+             patch.object(self.adapter, "get_operations_by_cursor", return_value={
+                 "items": [{
+                     "brokerAccountId": ACCOUNT,
+                     "id": "commission-op-1",
+                     "instrumentUid": UID,
+                     "date": (sent + timedelta(hours=1)).isoformat(),
+                     "operationType": "OPERATION_TYPE_BROKER_FEE",
+                     "state": "OPERATION_STATE_EXECUTED",
+                 }],
+                 "hasNext": False,
+                 "nextCursor": "",
+             }):
+            result = self.adapter.recover_expired_day_zero_fill_from_operations(
+                ACCOUNT, UID, CLIENT, broker_id, "BUY", 2, sent,
+                lot_size=1, limit_price=Decimal("12.345"))
+        self.assertEqual(result.status, "CANCELLED")
+        self.assertEqual(result.lots_executed, 0)
+        self.assertEqual(result.code, "OPERATIONS_PROVE_ZERO_FILL_EXPIRED_DAY")
+        self.assertEqual(result.time_in_force, "TIME_IN_FORCE_DAY")
+        self.assertEqual(self.transport.count("PostOrder"), 0)
+
+    def test_expired_day_zero_fill_refuses_when_execution_evidence_exists(self):
+        sent = datetime.now(timezone.utc) - timedelta(days=2)
+        broker_id = "broker-order-expired-day-ops-evidence"
+        with patch.object(self.adapter, "list_orders", return_value=[]), \
+             patch.object(self.adapter, "get_operations_by_cursor", return_value={
+                 "items": [{
+                     "brokerAccountId": ACCOUNT,
+                     "id": "buy-op-1",
+                     "instrumentUid": UID,
+                     "date": (sent + timedelta(hours=1)).isoformat(),
+                     "operationType": "OPERATION_TYPE_BUY",
+                     "state": "OPERATION_STATE_EXECUTED",
+                     "quantityDone": "2",
+                     "tradesInfo": {"trades": [{
+                         "num": "trade-1",
+                         "date": (sent + timedelta(hours=1)).isoformat(),
+                         "quantity": "2",
+                         "price": money("12.345"),
+                     }]},
+                 }],
+                 "hasNext": False,
+                 "nextCursor": "",
+             }):
+            result = self.adapter.recover_expired_day_zero_fill_from_operations(
+                ACCOUNT, UID, CLIENT, broker_id, "BUY", 2, sent,
+                lot_size=1, limit_price=Decimal("12.345"))
+        self.assertEqual(result.status, "UNKNOWN")
+        self.assertEqual(result.code, "DAY_EXECUTION_EVIDENCE_PRESENT")
+        self.assertEqual(self.transport.count("PostOrder"), 0)
+
     def test_expired_day_order_recovers_zero_fill_from_complete_report_and_inactive_orders(self):
         sent = datetime.now(timezone.utc) - timedelta(days=2)
         broker_id = "broker-order-expired-day"
