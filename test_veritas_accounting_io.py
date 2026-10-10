@@ -282,6 +282,89 @@ class AccountingIOTests(unittest.TestCase):
         self.assert_scalar_snapshot(snapshot)
 
 
+class SnapshotCursor:
+    def __init__(self, one=None, all_rows=None, rowcount=-1):
+        self._one = one
+        self._all = list(all_rows or [])
+        self.rowcount = rowcount
+    def fetchone(self):
+        return deepcopy(self._one)
+    def fetchall(self):
+        return deepcopy(self._all)
+
+
+class SnapshotConnection:
+    def __init__(self):
+        self.calls=[]
+        self.portfolio={'name':'Champion','initial_nav_rub':1_000_000}
+        self.positions=[{'portfolio_name':'Champion','asset':'BTC','units':1.,
+                         'payload':{'token':'original'}}]
+    def execute(self, query, args=()):
+        self.calls.append((query,args))
+        if query.startswith('SELECT * FROM paper_portfolios'):
+            return SnapshotCursor(one=self.portfolio)
+        if query.startswith('SELECT * FROM paper_positions'):
+            return SnapshotCursor(all_rows=self.positions)
+        if query.startswith('UPDATE paper_positions'):
+            self.positions[0]['units']=2.
+            return SnapshotCursor(rowcount=1)
+        if query.startswith('UPDATE paper_portfolios'):
+            self.portfolio['initial_nav_rub']=900_000
+            return SnapshotCursor(rowcount=1)
+        if query.startswith('DELETE FROM paper_positions WHERE 1=0'):
+            return SnapshotCursor(rowcount=0)
+        raise AssertionError(query)
+
+
+class AccountingSnapshotCacheTests(unittest.TestCase):
+    def test_repeated_unchanged_book_read_is_reused_and_detached(self):
+        raw=SnapshotConnection()
+        connection=AIO.AccountingConnection(raw)
+        first=connection.portfolio_rows('Champion')
+        second=connection.portfolio_rows('Champion')
+        self.assertEqual(len(raw.calls),2)
+        self.assertEqual(first,second)
+        first[0]['initial_nav_rub']=1
+        first[1][0]['payload']['token']='mutated'
+        third=connection.portfolio_rows('Champion')
+        self.assertEqual(third[0]['initial_nav_rub'],1_000_000)
+        self.assertEqual(third[1][0]['payload']['token'],'original')
+        self.assertEqual(len(raw.calls),2)
+
+    def test_position_write_invalidates_cached_book_before_next_read(self):
+        raw=SnapshotConnection()
+        connection=AIO.AccountingConnection(raw)
+        self.assertEqual(connection.portfolio_rows('Champion')[1][0]['units'],1.)
+        connection.execute('UPDATE paper_positions SET units=%s WHERE portfolio_name=%s',(2.,'Champion'))
+        self.assertEqual(connection.portfolio_rows('Champion')[1][0]['units'],2.)
+        self.assertEqual(len(raw.calls),5)
+
+    def test_proven_noop_write_keeps_cached_snapshot(self):
+        raw=SnapshotConnection()
+        connection=AIO.AccountingConnection(raw)
+        connection.portfolio_rows('Champion')
+        before=len(raw.calls)
+        connection.execute('DELETE FROM paper_positions WHERE 1=0')
+        connection.portfolio_rows('Champion')
+        self.assertEqual(len(raw.calls),before+1)
+
+    def test_portfolio_write_and_data_modifying_cte_invalidate_cache(self):
+        raw=SnapshotConnection()
+        connection=AIO.AccountingConnection(raw)
+        connection.portfolio_rows('Champion')
+        connection.execute('UPDATE paper_portfolios SET initial_nav_rub=%s WHERE name=%s',
+                           (900_000,'Champion'))
+        self.assertEqual(connection.portfolio_rows('Champion')[0]['initial_nav_rub'],900_000)
+
+        connection.portfolio_rows('Champion')
+        before=len(raw.calls)
+        connection._invalidate_portfolio_cache_for_query(
+            "WITH delta AS (SELECT 1) UPDATE paper_positions SET units=units")
+        connection.portfolio_rows('Champion')
+        self.assertEqual(len(raw.calls),before+2)
+
+
+
 class AccountingCycleScopeTests(unittest.TestCase):
     def test_only_step_one_is_wrapped_and_proxy_is_released_before_protection(self):
         clock = ManualClock()
