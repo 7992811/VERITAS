@@ -727,23 +727,35 @@ class TBankTradingAdapter:
         normalized_tif = {
             "FILL_AND_KILL": "TIME_IN_FORCE_FILL_AND_KILL",
             "TIME_IN_FORCE_FILL_AND_KILL": "TIME_IN_FORCE_FILL_AND_KILL",
+            "DAY": "TIME_IN_FORCE_DAY",
+            "TIME_IN_FORCE_DAY": "TIME_IN_FORCE_DAY",
         }.get(time_in_force)
         if normalized_tif is None:
             return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
                                "UNKNOWN", "UNKNOWN",
-                               code="BROKER_REPORT_RECOVERY_REQUIRES_FAK")
+                               code="BROKER_REPORT_RECOVERY_UNSUPPORTED_TIF")
         center = datetime.fromisoformat(_timestamp(
             sent_at.isoformat() if isinstance(sent_at, datetime) else sent_at))
         now = datetime.now(timezone.utc)
-        # Do not use absence from a report as evidence until the immediate FAK
-        # outcome has had ample time to reach reporting.
         cutoff = now - timedelta(minutes=15)
-        if cutoff <= center:
-            return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
-                               "UNKNOWN", "UNKNOWN",
-                               code="BROKER_REPORT_RECOVERY_WINDOW_NOT_READY")
+        if normalized_tif == "TIME_IN_FORCE_DAY":
+            # T-Bank defines DAY as valid only through the trading day. Waiting
+            # a full 24h is deliberately more conservative than exchange close:
+            # by then an accepted DAY order cannot still be legitimately live.
+            terminal_after = center + timedelta(days=1)
+            if cutoff <= terminal_after:
+                return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                   "UNKNOWN", "UNKNOWN",
+                                   code="BROKER_REPORT_DAY_NOT_EXPIRED")
+            end = terminal_after
+        else:
+            # FAK is terminal immediately; retain a reporting grace period.
+            if cutoff <= center:
+                return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                   "UNKNOWN", "UNKNOWN",
+                                   code="BROKER_REPORT_RECOVERY_WINDOW_NOT_READY")
+            end = min(center + timedelta(days=1), cutoff)
         start = center - timedelta(minutes=5)
-        end = min(center + timedelta(days=1), cutoff)
         start_s, end_s = start.isoformat(), end.isoformat()
         key = (account, uid, broker, start_s, end_s)
 
@@ -807,16 +819,32 @@ class TBankTradingAdapter:
                                    "UNKNOWN", "UNKNOWN", code=exc.code)
 
         exact = [row for row in report["trades"] if str(row.get("orderId", "")) == broker]
+        if normalized_tif == "TIME_IN_FORCE_DAY":
+            try:
+                active = self.list_orders(account)
+            except TradingError as exc:
+                return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                   "UNKNOWN", "UNKNOWN",
+                                   code=exc.code)
+            if any((row.broker_order_id == broker
+                    or row.client_order_id == client) for row in active):
+                return OrderResult(client, broker, uid, normalized_side, requested_lots, None,
+                                   "UNKNOWN", "UNKNOWN",
+                                   code="BROKER_REPORT_DAY_ORDER_STILL_ACTIVE")
         if not exact:
-            # Official FAK semantics guarantee immediate fill-or-cancel. A
-            # complete broker trade report covering the request with no row for
-            # its exact order_id therefore proves zero fill and cancellation.
+            # For FAK, terminality is immediate. For DAY, terminality is proven
+            # only after the conservative 24h horizon above and a fresh GetOrders
+            # check confirms that the order is no longer active. A complete
+            # broker trade report with no exact order_id then proves zero fill.
+            proof_code = ("BROKER_REPORT_PROVES_ZERO_FILL_FAK"
+                          if normalized_tif == "TIME_IN_FORCE_FILL_AND_KILL"
+                          else "BROKER_REPORT_PROVES_ZERO_FILL_DAY")
             return OrderResult(
                 client, broker, uid, normalized_side, requested_lots, 0,
                 "CANCELLED", "ACCEPTED",
                 broker_status="EXECUTION_REPORT_STATUS_CANCELLED",
                 executions=(), executed_commission=Decimal("0"),
-                commission_currency="RUB", code="BROKER_REPORT_PROVES_ZERO_FILL_FAK",
+                commission_currency="RUB", code=proof_code,
                 order_type="ORDER_TYPE_LIMIT",
                 limit_price=_price(limit_price) if limit_price is not None else None,
                 time_in_force=normalized_tif)
