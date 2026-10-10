@@ -4997,7 +4997,11 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
                               (json.dumps(patch),name,asset))
     if thesis_patches:
         PIO.write_patches_one_roundtrip(c,thesis_patches)
-    rows = prepared = z = None
+    # Release full position evidence and temporary management dictionaries
+    # before entering the nested portfolio core. The delegated candidate/summary
+    # projections remain intact; no retained DB payload is needed below.
+    rows = prepared = z = q = identity = payload = guard = patch = candidate = None
+    mark_updates = thesis_patches = None
     return _r80_base_step_one(c,name,policy,safe_candidates,safe_prices,ruonia,usdrub,ts,VC.COMMISSION_RATE,safe_summary)
 
 
