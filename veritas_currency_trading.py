@@ -248,6 +248,47 @@ class CurrencyTradingCoordinator:
                 expires_at=now + timedelta(seconds=self.approval_ttl_seconds),
                 economics_revision=1)
 
+    def _dynamic_tp_shadow(self, facts, now, held, direction):
+        """Observe whether a fixed target coincides with a live same-direction impulse.
+
+        Shadow only: this never changes, delays, cancels or resizes the exit.
+        """
+        candidates=[]
+        for row in self.summary():
+            context=(row.get("timeframe_entry_context")
+                     or (row.get("trade_plan") or {}).get("timeframe_entry_context") or {})
+            event=context.get("event") or {}
+            if (row.get("asset")!="CNYRUBF"
+                    or event.get("direction")!=direction
+                    or not event.get("event_id")
+                    or json_safe(context.get("source_identity"))!=held.get("source_identity")):
+                continue
+            assessed=VCR.VTDE.event_impulse_assess(row,direction)
+            if assessed.get("eligible") is True:
+                candidates.append((row,context,assessed))
+        if not candidates:
+            return {"version":"CURRENCY_DYNAMIC_TP_SHADOW_V1",
+                    "mode":"SHADOW_ONLY_NO_EXECUTION_CHANGE",
+                    "same_direction_impulse_active":False,
+                    "automatic_action":False,
+                    "checked_at":utc(now).isoformat()}
+        row,context,assessed=max(candidates,key=lambda item:(
+            int(item[2].get("immediate_max") is True),
+            TFP.TS.timestamp((item[1].get("event") or {}).get("signal_at")) or 0))
+        event=context.get("event") or {}
+        return {"version":"CURRENCY_DYNAMIC_TP_SHADOW_V1",
+                "mode":"SHADOW_ONLY_NO_EXECUTION_CHANGE",
+                "same_direction_impulse_active":True,
+                "event_id":event.get("event_id"),
+                "event_type":event.get("event_type"),
+                "horizon":row.get("horizon"),
+                "reason":assessed.get("reason"),
+                "game_changer":assessed.get("immediate_max") is True,
+                "defer_fixed_take_profit":assessed.get("defer_fixed_take_profit") is True,
+                "news_confirmed":assessed.get("news_confirmed") is True,
+                "automatic_action":False,
+                "checked_at":utc(now).isoformat()}
+
     def prepare_next(self):
         with self._lock:
             facts = self._checked_facts()
@@ -264,6 +305,11 @@ class CurrencyTradingCoordinator:
                     reason = "STRUCTURAL_STOP_REACHED"
                 elif target is not None and sign * (price - decimal(target)) >= 0:
                     reason = "STRATEGY_TARGET_REACHED"
+                    held_direction = "LONG" if sign > 0 else "SHORT"
+                    trigger_context = {
+                        "currency_dynamic_tp_shadow": self._dynamic_tp_shadow(
+                            facts, now, held, held_direction)
+                    }
                 else:
                     opposite = "SHORT" if sign > 0 else "LONG"
                     eligible = []
