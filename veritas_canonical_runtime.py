@@ -383,7 +383,10 @@ def currency_candidate_book(summary, now=None):
           and _direction(r) in ("LONG","SHORT")]
     if not rows:
         return {}
-    priority={"5m":5.0,"1h":4.0,"4h":3.0,"1m":2.0,"1d":1.5,"3d":1.0,"7d":0.5}
+    # Currency is execution-sensitive: a fresh causal 1m break may confirm
+    # the move before a slower 1h/4h row, while 5m remains the preferred balance
+    # of speed and noise. Every candidate still passes the full canonical gate.
+    priority={"5m":5.0,"1m":4.5,"1h":4.0,"4h":3.0,"1d":1.5,"3d":1.0,"7d":0.5}
     prepared=[]
     senior4=next((dict(r) for r in (summary or [])
                   if str((r or {}).get("asset") or "")=="CNYRUBF"
