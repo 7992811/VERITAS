@@ -125,6 +125,56 @@ def assess(c, z, **kwargs):
     return evaluate(z, a, **kwargs)
 
 
+def projected_add_floor(c, z, add_fill_price, add_units, add_fee_rub, *,
+                        mark_price=None, now=None, commission=VC.COMMISSION_RATE):
+    """Protect an already net-protected episode from a later add.
+
+    If the current position is not protected after costs, this gate is not the
+    authority for the add. If it is protected, the post-add position must remain
+    protected at the exact same effective stop after the new fill, entry fee,
+    funding projection and modeled exit cost.
+    """
+    out = {'version': VERSION, 'applied': False, 'eligible': True,
+           'reason': 'CURRENT_POSITION_NOT_NET_PROTECTED',
+           'current': None, 'projected': None}
+    if not is_protected(z or {}):
+        return out
+    tid = (z or {}).get('active_trade_id')
+    units = number((z or {}).get('units'))
+    entry = number((z or {}).get('avg_entry_price'))
+    fill = number(add_fill_price)
+    add_u = number(add_units)
+    add_fee = number(add_fee_rub)
+    mark = number(mark_price if mark_price is not None else (z or {}).get('last_price'))
+    stop = effective_stop(z or {})
+    if (not tid or any(x is None for x in (units, entry, fill, add_u, add_fee, mark, stop))
+            or min(units, entry, fill, add_u, mark, stop) <= 0 or add_fee < 0):
+        return dict(out, eligible=False, applied=True, reason='PROTECTED_ADD_INPUT_INVALID')
+    a = load_accounts(c, [tid], include_payload=False).get(tid)
+    current = evaluate(z, a, stop=stop, price=mark, now=now, commission=commission)
+    out['current'] = current
+    if not current.get('profit_protection_active'):
+        return out
+    new_units = units + add_u
+    new_entry = (units*entry + add_u*fill) / new_units
+    projected_z = dict(z)
+    projected_z.update(units=new_units, avg_entry_price=new_entry, last_price=mark)
+    projected_a = dict(a or {})
+    projected_a['fees_rub'] = (number(projected_a.get('fees_rub')) or 0.0) + add_fee
+    nav = number(projected_a.get('portfolio_nav_rub'))
+    if nav is not None:
+        projected_a['portfolio_nav_rub'] = max(1.0, nav-add_fee)
+    projected = evaluate(projected_z, projected_a, stop=stop, price=mark,
+                         now=now, commission=commission)
+    out.update(applied=True, projected=projected)
+    net = number((projected.get('net_profit_protection') or {}).get('net_at_stop_rub'))
+    if projected.get('profit_protection_active') and net is not None and net >= .01:
+        out.update(eligible=True, reason='PROTECTED_EPISODE_FLOOR_PRESERVED')
+    else:
+        out.update(eligible=False, reason='PROTECTED_EPISODE_FLOOR_WOULD_BE_LOST')
+    return out
+
+
 REFRESH_POSITIONS_SQL = '''SELECT z.asset,z.direction,z.units,z.avg_entry_price,z.last_price,
     z.stop_price,z.opened_at,z.active_trade_id,
     CASE WHEN jsonb_typeof(z.payload)='object' THEN

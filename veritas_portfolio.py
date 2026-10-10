@@ -41,7 +41,6 @@ POSITION_STEP=0.05
 POLICIES={name:CTC.runtime_portfolio_policy(name) for name in CTC.PORTFOLIO_ORDER}
 
 
-
 def _now(): return datetime.now(timezone.utc).isoformat()
 
 def _jsonable(x):
@@ -2320,16 +2319,17 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     fill=prepared['fill']
     fill_price=float(fill['fill_price'])
     fee=add*COMMISSION; units=add/fill_price
+    protected_add_floor=VPP.projected_add_floor(c,dict(z),fill_price,units,fee,mark_price=float(price),now=ts,commission=COMMISSION) if z else None
+    if protected_add_floor and protected_add_floor.get('applied') and not protected_add_floor.get('eligible'): _record_entry_outcome(row,'BLOCKED','PROTECTED_EPISODE_FLOOR_WOULD_BE_LOST',protected_episode_floor=protected_add_floor); return 0.0
     c.execute('UPDATE paper_portfolios SET fees_rub=fees_rub+%s,updated_at=%s WHERE name=%s',(fee,ts,name))
     if z:
         old_units=float(z['units']); avg=(old_units*float(z['avg_entry_price'])+units*fill_price)/(old_units+units)
-        # Preserve the original structural stop/setup on adds. An add is not
-        # permission to silently switch the active trade to another horizon's stop.
         old_payload=_position_payload(dict(z))
         add_patch={'last_add_pwin':row['_pwin'],'last_add_event_id':entry_event_id,
                    'last_add_execution_snapshot':final_gate.get('execution_snapshot'),
                    'last_add_stop_risk_budget':prepared['stop_risk_budget'],
-                   'last_add_teaching_trace':teaching_trace,'last_add_canonical_admission':row.get('_canonical_admission')}
+                   'last_add_teaching_trace':teaching_trace,'last_add_canonical_admission':row.get('_canonical_admission'),
+                   'protected_episode_add_floor':protected_add_floor}
         import veritas_structural_lifecycle as VSL
         import veritas_timeframe_policy as TFP
         if VSL.owns_position(z) and TFP.structural_quote_rule(row):
