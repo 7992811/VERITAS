@@ -680,6 +680,58 @@ class TradeHttpApplication:
         return (getattr(self.coordinator, "robot_autotrade_enabled", False) is True
                 and self.environment == "production")
 
+    def autotrade_diagnostics(self):
+        configured = _enabled("VERITAS_CURRENCY_AUTOTRADE_ENABLED")
+        trade_execution = _enabled("VERITAS_CURRENCY_TRADE_EXECUTION_ENABLED")
+        live_execution = _enabled("VERITAS_LIVE_EXECUTION_ENABLED")
+        armed = _enabled("VERITAS_LIVE_EXECUTION_ARMED")
+        production = self.environment == "production"
+
+        console_enabled = _enabled("VERITAS_CURRENCY_TRADE_CONSOLE_ENABLED")
+        execution_requested = None
+        paused = None
+        console_ok = True
+        if console_enabled and callable(getattr(self, "console_binding", None)):
+            try:
+                binding = self.console_binding() or {}
+                execution_requested = binding.get("execution_requested") is True
+                paused = binding.get("paused") is True
+                console_ok = execution_requested and not paused
+            except Exception:
+                console_ok = False
+
+        blockers = []
+        if not configured:
+            blockers.append("VERITAS_CURRENCY_AUTOTRADE_ENABLED_FALSE")
+        if not trade_execution:
+            blockers.append("VERITAS_CURRENCY_TRADE_EXECUTION_ENABLED_FALSE")
+        if not live_execution:
+            blockers.append("VERITAS_LIVE_EXECUTION_ENABLED_FALSE")
+        if not armed:
+            blockers.append("VERITAS_LIVE_EXECUTION_ARMED_FALSE")
+        if not production:
+            blockers.append("CURRENCY_NOT_PRODUCTION_ENVIRONMENT")
+        if console_enabled and execution_requested is not True:
+            blockers.append("CURRENCY_CONSOLE_EXECUTION_NOT_REQUESTED")
+        if console_enabled and paused is True:
+            blockers.append("CURRENCY_CONSOLE_PAUSED")
+        if console_enabled and not console_ok and not blockers:
+            blockers.append("CURRENCY_CONSOLE_PERMISSION_UNAVAILABLE")
+
+        return {
+            "configured": configured,
+            "effective": self.robot_autotrade_enabled,
+            "environment": self.environment,
+            "trade_execution_enabled": trade_execution,
+            "live_execution_enabled": live_execution,
+            "live_execution_armed": armed,
+            "console_enabled": console_enabled,
+            "console_execution_requested": execution_requested,
+            "console_paused": paused,
+            "blockers": blockers,
+            "primary_blocker": blockers[0] if blockers else None,
+        }
+
     def _initialize(self):
         if not self._ready:
             self.repository.ensure_schema()
@@ -831,8 +883,10 @@ class TradeHttpApplication:
                 "account_id": self.account_id, "instrument_uid": self.instrument_uid,
                 "execution_environment": self.environment,
                 "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
+                "robot_autotrade_configured": _enabled("VERITAS_CURRENCY_AUTOTRADE_ENABLED"),
                 "robot_autotrade_enabled": self.robot_autotrade_enabled,
                 "autotrade_enabled": self.sandbox_autotrade_enabled or self.robot_autotrade_enabled,
+                "autotrade_diagnostics": self.autotrade_diagnostics(),
                 "live_account_admission_configured": configured,
                 "live_account_admission": json_safe(admission_status),
                 "manual_account_admission": json_safe(manual_status),
