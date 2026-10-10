@@ -212,6 +212,12 @@ class ConsoleStoreTests(Helpers, unittest.TestCase):
         self.store.set_operation("resume", actor)
         self.assertFalse(self.store.binding()["paused"])
         self.store.set_operation("pause", actor)
+        self.assertTrue(self.store.binding()["paused"])
+        self.assertTrue(self.store.binding()["execution_requested"])
+        self.store.set_operation("resume", actor)
+        self.assertFalse(self.store.binding()["paused"])
+        self.assertTrue(self.store.binding()["execution_requested"])
+        self.store.set_operation("disable_execution", actor)
         self.assertFalse(self.store.binding()["execution_requested"])
         for action in ("approve", "execute", "decision", "send"):
             with self.subTest(action=action), self.assertRaisesRegex(C.ConsoleError, "INVALID_CONSOLE_ACTION"):
