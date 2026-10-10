@@ -3081,7 +3081,7 @@ def _v90j_load_closed(pg_connect,limit=2500):
         try:
             rows=c.execute("""SELECT t.*,"""+VLE.trade_hash_sql("t")+""" AS learning_evidence_hash,
                      oa.last_order_at,oa.last_order_reason,oa.entry_units,oa.exit_units,
-                     oa.entry_notional_rub,oa.exit_notional_rub,
+                     oa.entry_notional_rub,oa.exit_notional_rub,oa.entry_fill_count,oa.exit_fill_count,oa.take_profit_fill_count,
                      dd.payload AS decision_payload,
                      sh.high_price AS shadow_high_price,sh.low_price AS shadow_low_price,
                      sh.stop_price AS shadow_stop_price,sh.exit_price AS shadow_exit_price,
@@ -3096,7 +3096,10 @@ def _v90j_load_closed(pg_connect,limit=2500):
                        SUM(CASE WHEN o.side IN ('SELL','BUY_TO_COVER')
                                 THEN o.notional_rub/NULLIF(o.price,0) ELSE 0 END) AS exit_units,
                        SUM(CASE WHEN o.side IN ('BUY','SELL_SHORT') THEN o.notional_rub ELSE 0 END) AS entry_notional_rub,
-                       SUM(CASE WHEN o.side IN ('SELL','BUY_TO_COVER') THEN o.notional_rub ELSE 0 END) AS exit_notional_rub
+                       SUM(CASE WHEN o.side IN ('SELL','BUY_TO_COVER') THEN o.notional_rub ELSE 0 END) AS exit_notional_rub,
+                       COUNT(*) FILTER(WHERE o.side IN ('BUY','SELL_SHORT')) AS entry_fill_count,
+                       COUNT(*) FILTER(WHERE o.side IN ('SELL','BUY_TO_COVER')) AS exit_fill_count,
+                       COUNT(*) FILTER(WHERE COALESCE(o.reason,'') LIKE 'TAKE_PROFIT%') AS take_profit_fill_count
                 FROM paper_orders o WHERE o.trade_id=t.trade_id
               ) oa ON TRUE
               LEFT JOIN LATERAL (
@@ -3214,7 +3217,7 @@ def _v90j_load_closed(pg_connect,limit=2500):
         z['learning_conclusion']=VTD.conclusion(diagnosis)
         z['trade_diagnostics']=diagnosis
         z['learning_eligible']=bool(diagnosis.get('learning_eligible'))
-        z['episode_key']=_v90j_episode_key(z,payload)
+        z['episode_key']=_v90j_episode_key(z,payload); VTR.attach_postmortem(z,dp,sp,diagnosis,payload)
         VLE.mark_trade(z,dict(r0))
         z['today_msk']=(_v90j_msk_date(cl)==datetime.now(timezone(timedelta(hours=3))).date())
         # The UI/learning layer uses flattened fields above. Do not retain duplicate
@@ -3341,7 +3344,7 @@ def trade_report(pg_connect,limit=2500):
         'learning_eligible_count':sum(1 for x in unique_all if x.get('learning_eligible')),
         'deduplicated_portfolio_records':max(0,len(rows)-len(unique_all)),
         'today_missing_fields':missing,
-        'today_recovery':recovery,
+        'today_recovery':recovery,**VTR.postmortem_report_fields(rows),
         'archive_window':min(5000,max(50,int(limit or 2500))),
         'display_policy':'today full detail; older portfolio results + unique learning episodes only',
         'learning_policy':'one canonical market episode once; portfolio duplicates aggregated before self-learning',

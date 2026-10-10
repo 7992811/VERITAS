@@ -26,7 +26,16 @@ ui.st.trades={trades:[{
   trade_id:'t1',portfolio_name:'Champion',asset:'BTC',horizon:'5m',direction:'LONG',status:'CLOSED',
   opened_at:'2026-10-09T09:00:00Z',closed_at:'2026-10-09T09:30:00Z',
   avg_entry_price:100,avg_exit_price:99.9,net_pnl_rub:-120,gross_pnl_rub:-100,
-  payload:{mfe_pct:0.22,mae_pct:-0.08,initial_stop_price:99.5}
+  payload:{mfe_pct:0.22,mae_pct:-0.08,initial_stop_price:99.5},
+  self_learning_review:{version:'TRADE_POSTMORTEM_V2',classification:'PROFIT_GIVEBACK_REVIEW',material_mfe_threshold_pct:0.15,
+    path:{material_profit_giveback:true},
+    levels_volatility:{stop_anchor:99.6,protected_level_kind:'previous_low',stop_anchor_buffer_atr:0.15,atr:0.5,initial_risk_atr:1,target_distance_atr:2,gross_target_to_risk:2,target_ladder:[{price:101}]},
+    market_context:{trigger_timeframe:'5m',structural_timeframe:'1h',stop_timeframe:'1h',atr_timeframe:'1h',
+      decision:'LONG',signal_tier:'SUPER_LONG',confidence:.82,regime:'UPTREND_MID_VOL',entry_reason:'TRADE_PLAN_READY',final_gate_blockers:[],
+      moving_averages:{sma18:100.5},moving_averages_in_trade_path:[{name:'SMA18',price:100.5}],indicators:{rsi:58}},
+    execution:{entry_fill_count:2,take_profit_fill_count:1,had_adds:true},
+    issues:['Проверить защиту прибыли.'],strengths:['Стоп корректен.'],violations:[],evidence_limitations:[],
+    proposals:[{kind:'SUSTAINED_PROFIT_PROTECTION_REPLAY',title:'Защита прибыли',rationale:'Проверить MFE 0,15%.',status:'OWNER_REVIEW_REQUIRED',canonical_conflicts:['Не реагировать на короткий импульс.'],promotion_blockers:['SHADOW_AND_OOS_REQUIRED']}]}
 }]};
 ui.st.autonomous={counts:{direction:40,trade:8},
   candidates:[{candidate_id:'a1',kind:'SIZE_DOWN_UNCALIBRATED',state:'evaluating',training_n:32,
@@ -73,6 +82,14 @@ assert.match(elements.reviewBody.innerHTML,/Production candidate/);
 assert.match(elements.reviewBody.innerHTML,/Упущенные возможности/);
 assert.match(elements.reviewBody.innerHTML,/Подтверждено в shadow/);
 assert.match(elements.reviewBody.innerHTML,/не доказанный исполнимый P&L/);
+assert.match(elements.reviewBody.innerHTML,/Уровни и волатильность/);
+assert.match(elements.reviewBody.innerHTML,/предыдущий low/);
+assert.match(elements.reviewBody.innerHTML,/SMA18/);
+assert.match(elements.reviewBody.innerHTML,/Логика входа/);
+assert.match(elements.reviewBody.innerHTML,/SUPER_LONG/);
+assert.match(elements.reviewBody.innerHTML,/Предложения на верификацию/);
+assert.match(elements.reviewBody.innerHTML,/На утверждение/);
+assert.match(elements.reviewSummary.innerHTML,/На утверждение/);
 assert.doesNotMatch(elements.reviewBody.innerHTML,/NaN|undefined/);
 ui.reviewSetTab('review');
 assert.equal(elements.tradePanel.hidden,true);
