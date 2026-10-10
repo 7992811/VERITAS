@@ -1,0 +1,35 @@
+name: Five Portfolio Verification Fix CI
+on:
+  push:
+    branches: [ "ci/five-portfolio-verification-47e499e" ]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci_ephemeral_test_only
+          POSTGRES_DB: veritas_quality_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d veritas_quality_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.3"
+      - run: pip install -r requirements-intelligence.txt
+      - name: Compile optimized runtime
+        run: python -m py_compile veritas_accounting_io.py veritas_book_marking.py veritas_portfolio.py veritas_portfolio_runtime.py veritas_portfolio_cycle.py
+      - name: Unit five-book regressions
+        run: python -m unittest -v test_veritas_accounting_io.py test_veritas_book_marking.py test_veritas_r46_snapshot_borrowing.py test_veritas_portfolio_cycle.py
+      - name: PostgreSQL parity
+        env:
+          VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
+        run: python -m unittest -v test_veritas_book_marking_sql.py test_veritas_portfolio_cycle_sql.py
