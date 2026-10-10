@@ -2111,6 +2111,9 @@ def _v90q2_quality_gate(row,policy,drawdown):
 _signal_first_admission = _v90q2_quality_gate
 
 def _portfolio_rows(c,name,*,mark_only=False):
+    borrow=getattr(c,'portfolio_rows',None)
+    if callable(borrow):
+        return borrow(name,mark_only=mark_only,mark_sql=VBM.MARK_SQL)
     p=c.execute('SELECT * FROM paper_portfolios WHERE name=%s',(name,)).fetchone()
     pos=c.execute((VBM.MARK_SQL if mark_only else 'SELECT * FROM paper_positions')+' WHERE portfolio_name=%s',(name,)).fetchall()
     return p,pos
