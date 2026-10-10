@@ -393,6 +393,11 @@ class CurrencyTradeLedger:
         );
         ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS settlement JSONB;
         ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS fill_fingerprint TEXT;
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS excursion_entry_price NUMERIC;
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS excursion_direction TEXT;
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS mfe_price NUMERIC;
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS mae_price NUMERIC;
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS excursion_started_at TIMESTAMPTZ;
         CREATE TABLE IF NOT EXISTS {SETTLEMENTS}(
           account_id TEXT NOT NULL, instrument_uid TEXT NOT NULL, observation_id TEXT NOT NULL,
           observed_at TIMESTAMPTZ NOT NULL, requested_through TIMESTAMPTZ NOT NULL,
@@ -648,9 +653,44 @@ class CurrencyTradeLedger:
         funding_ready = (self._funding_ready(row) and allow_high_water_update is True
                          and funding_reconciled is not False)
         result = valuation(row, mark_price, spec, funding_reconciled=funding_ready)
-        c.execute(f"UPDATE {ACCOUNTS} SET high_water_rub=%s,last_mark_price=%s,last_mark_observed_at=%s WHERE account_id=%s",
-                  (result["high_water_rub"],exact(mark_price, positive=True),observed,row["account_id"]))
-        row.update(high_water_rub=result["high_water_rub"],last_mark_price=exact(mark_price),last_mark_observed_at=observed)
+        mark = exact(mark_price, positive=True)
+        signed = lots(row["signed_lots"])
+        entry = exact(row["average_entry_price"], positive=True) if signed else None
+        direction = "LONG" if signed > 0 else "SHORT" if signed < 0 else None
+        reset_excursion = bool(
+            direction is None
+            or row.get("excursion_direction") != direction
+            or (entry is not None and (
+                row.get("excursion_entry_price") is None
+                or exact(row["excursion_entry_price"], positive=True) != entry
+            ))
+        )
+        if direction is None:
+            excursion_entry = excursion_direction = mfe = mae = excursion_started = None
+        elif reset_excursion:
+            excursion_entry, excursion_direction = entry, direction
+            mfe = mae = mark
+            excursion_started = observed
+        else:
+            excursion_entry = entry
+            excursion_direction = direction
+            prior_mfe = exact(row.get("mfe_price"), positive=True) if row.get("mfe_price") is not None else mark
+            prior_mae = exact(row.get("mae_price"), positive=True) if row.get("mae_price") is not None else mark
+            if direction == "LONG":
+                mfe, mae = max(prior_mfe, mark), min(prior_mae, mark)
+            else:
+                mfe, mae = min(prior_mfe, mark), max(prior_mae, mark)
+            excursion_started = row.get("excursion_started_at") or observed
+        c.execute(f"""UPDATE {ACCOUNTS}
+                  SET high_water_rub=%s,last_mark_price=%s,last_mark_observed_at=%s,
+                      excursion_entry_price=%s,excursion_direction=%s,mfe_price=%s,mae_price=%s,
+                      excursion_started_at=%s
+                  WHERE account_id=%s""",
+                  (result["high_water_rub"],mark,observed,excursion_entry,excursion_direction,
+                   mfe,mae,excursion_started,row["account_id"]))
+        row.update(high_water_rub=result["high_water_rub"],last_mark_price=mark,last_mark_observed_at=observed,
+                   excursion_entry_price=excursion_entry,excursion_direction=excursion_direction,
+                   mfe_price=mfe,mae_price=mae,excursion_started_at=excursion_started)
         return dict(self._view(row, status="FROZEN" if row["entries_frozen"] else "SNAPSHOT"), **result)
 
     def _funding_ready(self, row):
@@ -698,4 +738,16 @@ class CurrencyTradeLedger:
                 "settlement_reasons":settlement.get("reasons", []),
                 "entries_frozen":row["entries_frozen"], "freeze_reason":row["freeze_reason"],
                 "broker_signed_lots":row["broker_signed_lots"], "broker_snapshot_id":row["broker_snapshot_id"],
-                "broker_observed_at":row["broker_observed_at"], "mark_observed_at":row["last_mark_observed_at"]}
+                "broker_observed_at":row["broker_observed_at"], "mark_observed_at":row["last_mark_observed_at"],
+                "excursion_entry_price":row.get("excursion_entry_price"),
+                "excursion_direction":row.get("excursion_direction"),
+                "mfe_price":row.get("mfe_price"), "mae_price":row.get("mae_price"),
+                "excursion_started_at":row.get("excursion_started_at"),
+                "mfe_pct":(
+                    (abs(exact(row["mfe_price"])-exact(row["excursion_entry_price"])) /
+                     exact(row["excursion_entry_price"]) * 100)
+                    if row.get("mfe_price") is not None and row.get("excursion_entry_price") is not None else None),
+                "mae_pct":(
+                    (abs(exact(row["mae_price"])-exact(row["excursion_entry_price"])) /
+                     exact(row["excursion_entry_price"]) * 100)
+                    if row.get("mae_price") is not None and row.get("excursion_entry_price") is not None else None)}
