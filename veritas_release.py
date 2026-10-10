@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
-PRODUCT_VERSION="veritas-max-product-v91.8.42-protective-preclaim"
-PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.42-protective-preclaim"
-UI_VERSION="veritas-ui-v9.1.8.42-protective-preclaim"
+PRODUCT_VERSION="veritas-max-product-v91.8.43-protective-preclaim-atomic-readiness"
+PORTFOLIO_VERSION="veritas-portfolio-v9.1.8.43-protective-preclaim-atomic-readiness"
+UI_VERSION="veritas-ui-v9.1.8.43-protective-preclaim-atomic-readiness"
 DB_SCHEMA_VERSION="9.0"
 PORTFOLIOS=tuple(CTC.PORTFOLIO_ORDER)
 
@@ -54,7 +54,7 @@ def snapshot():
         },
         "runtime_read_policy":{
             "version":"BOUNDED_RUNTIME_READS_V14","historical_fields_use_record_projection":True,"legacy_noop_reads_omit_structural_string_owners":True,"book_accounting_io_measured":True,"empty_flip_books_avoid_redundant_reads":True,"owned_legacy_migrations_avoid_rereads":True,"book_payload_compression_checks_server_and_column_policy":True,
-            "startup_api_waits_for_bootstrap":True,"single_portfolio_snapshot_refresh":True,
+            "startup_api_waits_for_bootstrap":True,"atomic_live_state_readiness":True,"startup_portfolio_snapshot_primed":True,"startup_market_snapshot_verified":True,"startup_trade_snapshot_primed":True,"startup_ui_fast_retry":True,"startup_storage_audit_deferred":True,"single_portfolio_snapshot_refresh":True,
             "snapshot_and_schema_sql_waits_bounded":True,"profit_refresh_positions_projected":True,"post_funding_stop_cost_read_projected":True,"portfolio_http_wait_seconds":1.0,"completed_portfolio_reads_keep_observation_time":True,"protective_fills_advance_snapshot_revision":True,"position_account_payload_reused":True,"entry_decision_display_projected":True,
             "current_portfolio_schema_avoids_ddl":True,"unchanged_portfolio_metadata_avoids_row_locks":True,
             "closed_journal_payload_projected":True,"quality_evidence_root_extracted_once":True,"journal_evidence_root_extracted_once":True,
