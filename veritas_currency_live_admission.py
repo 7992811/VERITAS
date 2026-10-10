@@ -1003,11 +1003,36 @@ class WholeAccountLiveAdmission:
             candidate = LIVE.LiveCandidate("CNYRUBF", direction, float(fraction), float(price), float(stop),
                 float((exposure+other_gross)/equity), history["drawdown"], probability, terms["model_version"],
                 plan, source_gate, history["daily_pnl_pct"], history["weekly_pnl_pct"])
+            risk_profile = CTC.currency_live_risk_policy(history["drawdown"])
+            entry_mode = str(terms.get("currency_entry_mode") or "")
+            if entry_mode == "GAME_CHANGER":
+                _require(terms.get("currency_probability_bypass") is True,
+                         "CURRENCY_GAME_CHANGER_BYPASS_PROOF_REQUIRED")
+                probability_policy = {
+                    "required": False,
+                    "expectancy_required": False,
+                    "minimum_probability": float(terms.get("currency_probability_threshold") or
+                                                 CTC.PORTFOLIO_POLICIES["Currency"]["threshold"]),
+                    "mode": "GAME_CHANGER_STRUCTURAL_BYPASS",
+                }
+            else:
+                _require(entry_mode == "NORMAL" and terms.get("currency_probability_required") is True,
+                         "CURRENCY_NORMAL_ROLE_PROOF_REQUIRED")
+                probability_policy = {
+                    "required": True,
+                    "expectancy_required": True,
+                    "minimum_probability": float(terms.get("currency_probability_threshold") or
+                                                 CTC.PORTFOLIO_POLICIES["Currency"]["threshold"]),
+                    "mode": "NORMAL_CALIBRATED",
+                }
             gate = LIVE.authorize_candidate(candidate, current, correlations, registry, evidence,
-                durable_storage=True, broker_reconciled=True, kill_switch=history["kill_switch"])
+                durable_storage=True, broker_reconciled=True, kill_switch=history["kill_switch"],
+                risk_profile=risk_profile, probability_policy=probability_policy)
             result["blockers"].extend(gate["blockers"])
             result["live_authorization"] = gate
-            result["account_risk"] = {"fraction_nav_after": float(fraction), "gross_after": candidate.gross_after, **history}
+            result["account_risk"] = {"fraction_nav_after": float(fraction), "gross_after": candidate.gross_after,
+                                      "portfolio_risk_profile": risk_profile,
+                                      "currency_entry_mode": entry_mode, **history}
             # Preserve the original policy and additionally include costs in the
             # same caps.  Real protective stop prices above remain unmodified.
             econ = gate["order_gate"]["economics"]
@@ -1021,11 +1046,11 @@ class WholeAccountLiveAdmission:
             for measured, key, blocker in ((net_risks["CNYRUBF"], "max_stop_risk_nav", "STOP_RISK_LIMIT"),
                     (net_total, "max_total_open_stop_risk_nav", "TOTAL_OPEN_STOP_RISK_LIMIT"),
                     (net_correlated, "max_correlated_stop_risk_nav", "CORRELATED_STOP_RISK_LIMIT")):
-                if measured > CTC.LIVE_RISK_POLICY[key]:
+                if measured > float(risk_profile[key]):
                     result["blockers"].append(blocker)
-            for position in current:
-                if abs(position.fraction_nav) > CTC.LIVE_RISK_POLICY["max_single_asset_fraction"]:
-                    result["blockers"].append("LIVE_ACCOUNT_SINGLE_ASSET_LIMIT:" + position.asset)
+            # Existing non-Currency positions remain part of whole-account stop
+            # and correlation risk. Exposure limits for this dedicated Currency
+            # authorization are governed by the Currency portfolio profile.
             result["valid_until"] = min(min(_date(documents[k]["valid_until"]),
                 _date(documents[k]["issuer_valid_until"])) for k in documents).isoformat()
             result["valid_until"] = min(_date(result["valid_until"]),
