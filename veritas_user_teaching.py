@@ -29,6 +29,22 @@ EVENT_IMPULSE_TEACHING_ID = "USER_EVENT_IMPULSE_MAX_CAPTURE_2026_10_10"
 EVENT_IMPULSE_SOURCE_TIMESTAMP = "2026-10-10T06:59:00Z"
 MOEX_2146_TEACHING_ID = "USER_MOEX_INTRABAR_GAME_CHANGER_2026_10_10"
 MOEX_2146_SOURCE_TIMESTAMP = "2026-10-10T08:07:00Z"
+DYNAMIC_TP_TEACHING_ID = "USER_EVENT_IMPULSE_DYNAMIC_TP_2026_10_10"
+DYNAMIC_TP_SOURCE_TIMESTAMP = "2026-10-10T10:19:00Z"
+DYNAMIC_TP_USER_CORRECTION_RU = (
+    "При открытии позиции во время активного импульса фиксированный тейк-профит "
+    "не выставляется. Пока импульс продолжается, позиция сопровождается стопом, "
+    "защитой прибыли и трейлингом. Только после подтвержденного затухания импульса "
+    "и снижения волатильности система заново определяет TP/TP2 по актуальной "
+    "структуре рынка и уровням около экстремумов старших таймфреймов. Старые цели "
+    "момента входа не имеют права автоматически активироваться. Если старый TP "
+    "все же закрыл правильную позицию, но сигнал остается SUPER LONG/SUPER SHORT, "
+    "импульс сохраняется и волатильность не снизилась, система должна восстановить "
+    "позицию в том же направлении как продолжение импульса. Это не считается "
+    "повторной торговлей устаревшего сетапа. При повторном ускорении фиксированный "
+    "тейк снова отключается. Правило применяется сразу как обучение владельца и "
+    "не требует дополнительного подтверждения."
+)
 MOEX_2146_USER_CORRECTION_RU = (
     "Исправление P0: по кейсу MOEX 09.10.2026 LONG был подтвержден не в 21:58, "
     "а уже в 21:46 МСК, когда формирующаяся минутная свеча свежей котировкой "
@@ -463,6 +479,47 @@ def moex_2146_game_changer_snapshot():
     }
 
 
+def dynamic_tp_policy_snapshot():
+    """Owner P0: impulse TP and continuation re-entry are canonical invariants."""
+    policy=_copy((CTC.TREND_ACCELERATION_POLICY.get("event_impulse") or {}))
+    return {
+        "teaching_id":DYNAMIC_TP_TEACHING_ID,
+        "source_type":"USER_AUTHORED_P0_CANONICAL_CORRECTION",
+        "source_timestamp":DYNAMIC_TP_SOURCE_TIMESTAMP,
+        "source_timestamp_precision":"MINUTE",
+        "source_text_ru":DYNAMIC_TP_USER_CORRECTION_RU,
+        "status":"ACTIVE_OWNER_P0_CANONICAL",
+        "priority":"P0_HIGHEST",
+        "parent_teaching_id":MOEX_2146_TEACHING_ID,
+        "ctc_version":CTC.VERSION,
+        "runtime_authority":CTC.BASIS_RUNTIME,
+        "scope":"ALL_CONFIGURED_MODEL_PORTFOLIOS_ON_ALLOWED_ASSETS",
+        "execution_policy":policy,
+        "requirements":{
+            "active_impulse":"Fixed TP is OFF while the impulse remains active.",
+            "exhaustion":"Target rebuilding requires confirmed impulse decay, not the first slowing candle.",
+            "volatility":"Volatility contraction is required before a fresh fixed target can be armed.",
+            "fresh_targets":"Discard the entry-time ladder and rebuild TP/TP2 from current levels and senior-timeframe extrema.",
+            "stale_targets":"An old entry target can never reactivate automatically after impulse exhaustion.",
+            "premature_tp":"If an old TP closes a correct position while SUPER direction and the impulse remain active without volatility contraction, restore same-direction exposure.",
+            "reentry_identity":"Premature-TP restoration is impulse continuation, not stale-setup reuse.",
+            "reacceleration":"A renewed impulse invalidates any rebuilt fixed target and returns to trailing/structural management.",
+            "confirmation":"This owner-authored rule is immediately active and requires no additional proof.",
+        },
+        "parameter_validation":{
+            "status":"OWNER_P0_CANONICAL_NO_ADDITIONAL_PROOF",
+            "additional_proof_required":False,
+        },
+        "case_anchor":{
+            "asset":"MOEX","date":"2026-10-09/10","timezone":"Europe/Moscow",
+            "lesson":"ACTIVE_IMPULSE_NO_FIXED_TP_AND_RESTORE_AFTER_PREMATURE_TP",
+        },
+        "storage":{"table":"ledger_events","event_type":EVENT_TYPE,
+                   "entity_key":DYNAMIC_TP_TEACHING_ID,
+                   "event_key":EVENT_TYPE+":"+DYNAMIC_TP_TEACHING_ID},
+    }
+
+
 def observation_integrity_policy_snapshot():
     return {
         "teaching_id":OBSERVATION_INTEGRITY_TEACHING_ID,
@@ -495,7 +552,7 @@ def seed_all_user_teachings(pg_event, read_event=None):
             for payload in (policy_snapshot(), ma_policy_snapshot(),
                             breakout_policy_snapshot(), acceleration_policy_snapshot(),
                             trend_day_efficiency_snapshot(), event_impulse_policy_snapshot(),
-                            moex_2146_game_changer_snapshot(),
+                            moex_2146_game_changer_snapshot(), dynamic_tp_policy_snapshot(),
                             observation_integrity_policy_snapshot())]
 
 
