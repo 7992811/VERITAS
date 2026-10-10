@@ -360,6 +360,28 @@ class CurrencyLedgerPostgresTests(unittest.TestCase):
         self.assertEqual(held["source_identity"],SOURCE)
         self.assertEqual(held["horizon"],"5m")
 
+    def test_live_mfe_persistence_requires_full_five_minute_hold_window(self):
+        self.record(price="12.00",metadata=terms(horizon="5m"))
+        first=self.snapshot("12.02")
+        self.assertIsNotNone(first["protection_test_started_at"])
+        self.assertIsNone(first["protection_qualified_at"])
+        for seconds in (30,60,89):
+            self.now=NOW+timedelta(seconds=seconds)
+            state=self.snapshot("12.02")
+            self.assertIsNone(state["protection_qualified_at"])
+        self.now=NOW+timedelta(seconds=91)
+        qualified=self.snapshot("12.02")
+        self.assertIsNotNone(qualified["protection_qualified_at"])
+        self.assertGreaterEqual(qualified["excursion_observation_count"],5)
+        self.assertLessEqual(D(str(qualified["excursion_max_gap_seconds"])),D("30"))
+
+    def test_live_mfe_point_three_percent_qualifies_protection_immediately(self):
+        self.record(price="12.00",metadata=terms(horizon="5m"))
+        state=self.snapshot("12.04")
+        self.assertIsNotNone(state["protection_test_started_at"])
+        self.assertIsNotNone(state["protection_qualified_at"])
+        self.assertGreaterEqual(D(str(state["mfe_pct"])),D("0.30"))
+
     def test_stale_or_foreign_spec_cannot_revalue_ledger(self):
         self.record()
         other=L.InstrumentValuation(SPEC.instrument_uid,D("0.01"),D("20"),1)
