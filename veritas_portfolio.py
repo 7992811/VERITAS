@@ -41,7 +41,6 @@ POSITION_STEP=0.05
 POLICIES={name:CTC.runtime_portfolio_policy(name) for name in CTC.PORTFOLIO_ORDER}
 
 
-
 def _now(): return datetime.now(timezone.utc).isoformat()
 
 def _jsonable(x):
