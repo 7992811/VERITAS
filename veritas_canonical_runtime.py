@@ -28,7 +28,8 @@ def _num(v, default=None):
         return default
 
 def _direction(row):
-    return str((row or {}).get("research_decision") or (row or {}).get("decision") or "NO_TRADE")
+    d=str((row or {}).get("research_decision") or (row or {}).get("decision") or "NO_TRADE")
+    return TFP.structural_event_direction(row) if d not in ("LONG","SHORT") and TFP.structural_event_direction(row) else d
 
 def _tier(row):
     return str((row or {}).get("signal_tier") or (row or {}).get("execution_signal_tier") or "").upper()
@@ -163,6 +164,8 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
     d=_direction(raw)
     if d not in ("LONG","SHORT"):
         return {"open":False,"fraction":0.0,"reason":"NO_DIRECTION","hard_veto":False,"canonical_stage":"THESIS"}
+    if str(raw.get("research_decision") or raw.get("decision") or "") not in ("LONG","SHORT"):
+        raw["research_decision"]=d
 
     if clock is None:
         return {"open":False,"fraction":0.0,"reason":"SAME_TF_DECISION_TIME_REQUIRED","hard_veto":True,"canonical_stage":"DATA"}
