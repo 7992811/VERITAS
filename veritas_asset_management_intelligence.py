@@ -427,7 +427,6 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
         score = round(sum(value for value in components.values() if value is not None), 1)
         baseline = _baseline(c, score, components, component_status)
 
-    generic_status = "MEASURABLE" if generic.get("n", 0) >= 30 else "BUILDING"
     hit_delta = None
     if veritas.get("hit_rate") is not None and generic.get("hit_rate") is not None:
         hit_delta = 100.0 * (veritas["hit_rate"] - generic["hit_rate"])
@@ -437,6 +436,13 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
     utility_delta = None
     if veritas.get("avg_normalized_utility") is not None and generic.get("avg_normalized_utility") is not None:
         utility_delta = veritas["avg_normalized_utility"] - generic["avg_normalized_utility"]
+    comparable_reference_metrics = sum(value is not None for value in
+                                       (hit_delta, cap_delta, utility_delta))
+    generic_status = (
+        "BUILDING" if generic.get("n", 0) < 30
+        else "MEASURABLE" if comparable_reference_metrics == 3
+        else "PARTIAL"
+    )
 
     rollout_delta = None
     baseline_comparable = baseline_is_comparable(baseline, VERSION, components, component_status)
@@ -450,6 +456,16 @@ def _build_scorecard_unlocked(pg_connect, learning_progress, production_epoch, c
         else "MEDIUM" if len(episodes) >= 80 and portfolio["n"] >= 20
         else "LOW"
     )
+    # Confidence describes the evidence supporting the displayed *whole*
+    # scorecard, not just the decision sample. A missing/partial component must
+    # prevent the UI from claiming high proof for an incompletely observed
+    # 100-point score.
+    coverage_total = float(coverage.get("total_max_points") or 100.0)
+    coverage_ratio = float(coverage.get("observed_max_points") or 0.0) / coverage_total
+    if coverage_ratio < 0.50:
+        confidence = "LOW"
+    elif coverage.get("status") != "COMPLETE" and confidence == "HIGH":
+        confidence = "MEDIUM"
     value = {
         "status": "OK", "version": VERSION, "score": score, "max_score": 100,
         "score_status": "MEASURED" if coverage["status"] == "COMPLETE" else "PARTIAL_EVIDENCE",
