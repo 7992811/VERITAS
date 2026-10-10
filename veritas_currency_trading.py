@@ -534,18 +534,52 @@ class CurrencyTradingCoordinator:
                                     lookup = "operations_history_request_uuid"
                                 else:
                                     spec = terms.get("contract_spec") or {}
-                                    lookup = "broker_report"
-                                    report_recovery = self.adapter.recover_submission_from_broker_report(
-                                        self.account_id, terms.get("instrument_uid"),
-                                        proposal["client_order_id"], proposal["broker_order_id"],
-                                        terms.get("side"), integer(terms["lots"]),
-                                        proposal.get("send_started_at") or proposal.get("approved_at")
-                                        or proposal.get("created_at"),
-                                        ticker=spec.get("ticker"), lot_size=integer(spec.get("lot_size")),
-                                        time_in_force=terms.get("time_in_force"),
-                                        limit_price=terms.get("limit_price"))
-                                    result = report_recovery
-                                    lookup = "broker_report"
+                                    tif = terms.get("time_in_force")
+                                    if tif in {"DAY", "TIME_IN_FORCE_DAY"}:
+                                        lookup = "expired_day_operations_proof"
+                                        day_recovery = self.adapter.recover_expired_day_zero_fill_from_operations(
+                                            self.account_id, terms.get("instrument_uid"),
+                                            proposal["client_order_id"], proposal["broker_order_id"],
+                                            terms.get("side"), integer(terms["lots"]),
+                                            proposal.get("send_started_at") or proposal.get("approved_at")
+                                            or proposal.get("created_at"),
+                                            lot_size=integer(spec.get("lot_size")),
+                                            limit_price=terms.get("limit_price"))
+                                        if day_recovery.status != "UNKNOWN":
+                                            result = day_recovery
+                                        else:
+                                            result = day_recovery
+                                            # Positive/pending operation evidence is
+                                            # deliberately terminal for the recovery
+                                            # chain: a broker report may later resolve
+                                            # fills, but we never infer them now.
+                                            if getattr(day_recovery, "code", None) not in {
+                                                "DAY_EXECUTION_EVIDENCE_PRESENT",
+                                                "DAY_OPERATION_STILL_PROGRESS",
+                                                "DAY_ORDER_STILL_ACTIVE",
+                                                "DAY_ORDER_NOT_OLD_ENOUGH_FOR_OPERATION_PROOF",
+                                            }:
+                                                lookup = "broker_report"
+                                                result = self.adapter.recover_submission_from_broker_report(
+                                                    self.account_id, terms.get("instrument_uid"),
+                                                    proposal["client_order_id"], proposal["broker_order_id"],
+                                                    terms.get("side"), integer(terms["lots"]),
+                                                    proposal.get("send_started_at") or proposal.get("approved_at")
+                                                    or proposal.get("created_at"),
+                                                    ticker=spec.get("ticker"), lot_size=integer(spec.get("lot_size")),
+                                                    time_in_force=tif,
+                                                    limit_price=terms.get("limit_price"))
+                                    else:
+                                        lookup = "broker_report"
+                                        result = self.adapter.recover_submission_from_broker_report(
+                                            self.account_id, terms.get("instrument_uid"),
+                                            proposal["client_order_id"], proposal["broker_order_id"],
+                                            terms.get("side"), integer(terms["lots"]),
+                                            proposal.get("send_started_at") or proposal.get("approved_at")
+                                            or proposal.get("created_at"),
+                                            ticker=spec.get("ticker"), lot_size=integer(spec.get("lot_size")),
+                                            time_in_force=tif,
+                                            limit_price=terms.get("limit_price"))
                     else:
                         # Read-only recovery path. It converts an explicit broker 404
                         # into an UNKNOWN OrderResult with a stable diagnostic code
