@@ -12,6 +12,7 @@ from unittest.mock import patch
 import veritas_book_marking as M
 import veritas_position_guard as G
 import veritas_price_source as S
+import veritas_trade_review as R
 
 
 # Deliberately artificial amounts, dates and identifiers, unrelated to any book.
@@ -21,12 +22,13 @@ TREE = ast.parse(Path(__file__).with_name('veritas_portfolio.py').read_text())
 
 
 def helpers():
-    names = {'_portfolio_rows', '_mark_nav', '_v90j_json', '_v90j_iso',
-             '_v90j_mark_open_positions'}
+    names = {'_portfolio_rows', '_mark_nav', '_v90j_mark_open_positions'}
     nodes = [n for n in TREE.body if isinstance(n, ast.FunctionDef) and n.name in names]
-    ns = {'VBM': M, 'VPG': G, 'VPS': S, 'json': json, 'math': math}
+    ns = {'VBM': M, 'VPG': G, 'VPS': S, 'json': json, 'math': math,
+          '_v90j_json': R.json_object, '_v90j_iso': R.iso_value}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), 'book-marking-helpers', 'exec'), ns)
-    return SimpleNamespace(**{k: ns[k] for k in names})
+    return SimpleNamespace(**{k: ns[k] for k in names},
+                           _v90j_json=R.json_object, _v90j_iso=R.iso_value)
 
 
 H = helpers()
