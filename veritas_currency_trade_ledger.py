@@ -398,6 +398,11 @@ class CurrencyTradeLedger:
         ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS mfe_price NUMERIC;
         ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS mae_price NUMERIC;
         ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS excursion_started_at TIMESTAMPTZ;
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS excursion_observation_count BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS excursion_last_observed_at TIMESTAMPTZ;
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS excursion_max_gap_seconds NUMERIC;
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS protection_test_started_at TIMESTAMPTZ;
+        ALTER TABLE {ACCOUNTS} ADD COLUMN IF NOT EXISTS protection_qualified_at TIMESTAMPTZ;
         CREATE TABLE IF NOT EXISTS {SETTLEMENTS}(
           account_id TEXT NOT NULL, instrument_uid TEXT NOT NULL, observation_id TEXT NOT NULL,
           observed_at TIMESTAMPTZ NOT NULL, requested_through TIMESTAMPTZ NOT NULL,
@@ -557,6 +562,11 @@ class CurrencyTradeLedger:
                 "mae_price":mae,
                 "started_at":row.get("excursion_started_at"),
                 "last_mark_observed_at":row.get("last_mark_observed_at"),
+                "observation_count":row.get("excursion_observation_count"),
+                "max_gap_seconds":row.get("excursion_max_gap_seconds"),
+                "horizon":(row.get("held_terms") or {}).get("horizon") if isinstance(row.get("held_terms"), Mapping) else None,
+                "protection_test_started_at":row.get("protection_test_started_at"),
+                "protection_qualified_at":row.get("protection_qualified_at"),
             }
             if entry is not None and mfe is not None and mae is not None and direction in ("LONG","SHORT"):
                 entry_d = exact(entry, positive=True)
@@ -693,12 +703,31 @@ class CurrencyTradeLedger:
                 or exact(row["excursion_entry_price"], positive=True) != entry
             ))
         )
+        held_terms = row.get("held_terms") if isinstance(row.get("held_terms"), Mapping) else {}
+        horizon = str((held_terms or {}).get("horizon") or "")
+        hold_seconds = {"1m":45,"5m":90,"15m":120,"30m":150,"1h":180,"4h":600,"1d":1800}.get(horizon,90)
+        current_favorable = ZERO
+        if direction is not None and entry is not None and entry > 0:
+            current_favorable = max(ZERO, (
+                (mark-entry) if direction=="LONG" else (entry-mark)
+            ) / entry * Decimal("100"))
+
         if direction is None:
             excursion_entry = excursion_direction = mfe = mae = excursion_started = None
+            observation_count = 0
+            excursion_last = None
+            max_gap = None
+            protection_started = None
+            protection_qualified = None
         elif reset_excursion:
             excursion_entry, excursion_direction = entry, direction
             mfe = mae = mark
             excursion_started = observed
+            observation_count = 1
+            excursion_last = observed
+            max_gap = ZERO
+            protection_started = observed if current_favorable >= Decimal("0.15") else None
+            protection_qualified = observed if current_favorable >= Decimal("0.30") else None
         else:
             excursion_entry = entry
             excursion_direction = direction
@@ -709,16 +738,40 @@ class CurrencyTradeLedger:
             else:
                 mfe, mae = min(prior_mfe, mark), max(prior_mae, mark)
             excursion_started = row.get("excursion_started_at") or observed
+            prior_last = row.get("excursion_last_observed_at")
+            gap = Decimal(str(max(0.0,(observed-utc(prior_last)).total_seconds()))) if prior_last else ZERO
+            prior_gap = exact(row.get("excursion_max_gap_seconds"), nonnegative=True) if row.get("excursion_max_gap_seconds") is not None else ZERO
+            max_gap = max(prior_gap,gap)
+            observation_count = int(row.get("excursion_observation_count") or 0)+1
+            excursion_last = observed
+            protection_started = row.get("protection_test_started_at")
+            protection_qualified = row.get("protection_qualified_at")
+            if protection_qualified is None:
+                if current_favorable >= Decimal("0.30"):
+                    protection_started = protection_started or observed
+                    protection_qualified = observed
+                elif current_favorable >= Decimal("0.15"):
+                    protection_started = protection_started or observed
+                    if (observed-utc(protection_started)).total_seconds() >= hold_seconds:
+                        protection_qualified = observed
+                else:
+                    protection_started = None
         c.execute(f"""UPDATE {ACCOUNTS}
                   SET high_water_rub=%s,last_mark_price=%s,last_mark_observed_at=%s,
                       excursion_entry_price=%s,excursion_direction=%s,mfe_price=%s,mae_price=%s,
-                      excursion_started_at=%s
+                      excursion_started_at=%s,excursion_observation_count=%s,
+                      excursion_last_observed_at=%s,excursion_max_gap_seconds=%s,
+                      protection_test_started_at=%s,protection_qualified_at=%s
                   WHERE account_id=%s""",
                   (result["high_water_rub"],mark,observed,excursion_entry,excursion_direction,
-                   mfe,mae,excursion_started,row["account_id"]))
+                   mfe,mae,excursion_started,observation_count,excursion_last,max_gap,
+                   protection_started,protection_qualified,row["account_id"]))
         row.update(high_water_rub=result["high_water_rub"],last_mark_price=mark,last_mark_observed_at=observed,
                    excursion_entry_price=excursion_entry,excursion_direction=excursion_direction,
-                   mfe_price=mfe,mae_price=mae,excursion_started_at=excursion_started)
+                   mfe_price=mfe,mae_price=mae,excursion_started_at=excursion_started,
+                   excursion_observation_count=observation_count,excursion_last_observed_at=excursion_last,
+                   excursion_max_gap_seconds=max_gap,protection_test_started_at=protection_started,
+                   protection_qualified_at=protection_qualified)
         return dict(self._view(row, status="FROZEN" if row["entries_frozen"] else "SNAPSHOT"), **result)
 
     def _funding_ready(self, row):
@@ -771,6 +824,11 @@ class CurrencyTradeLedger:
                 "excursion_direction":row.get("excursion_direction"),
                 "mfe_price":row.get("mfe_price"), "mae_price":row.get("mae_price"),
                 "excursion_started_at":row.get("excursion_started_at"),
+                "excursion_observation_count":row.get("excursion_observation_count"),
+                "excursion_last_observed_at":row.get("excursion_last_observed_at"),
+                "excursion_max_gap_seconds":row.get("excursion_max_gap_seconds"),
+                "protection_test_started_at":row.get("protection_test_started_at"),
+                "protection_qualified_at":row.get("protection_qualified_at"),
                 "mfe_pct":(
                     max(ZERO, (
                         (exact(row["mfe_price"])-exact(row["excursion_entry_price"]))
