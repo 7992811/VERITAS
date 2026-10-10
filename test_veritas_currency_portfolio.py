@@ -163,6 +163,8 @@ class CurrencyPortfolioTests(TestCase):
             'costs_reconciled':True,'ledger_revision':2,'reconciled_revision':2,
             'broker_signed_lots':0,'broker_observed_at':t,'last_execution_at':t,
             'last_mark_price':'12.8','last_mark_observed_at':t,
+            'excursion_entry_price':None,'excursion_direction':None,
+            'mfe_price':None,'mae_price':None,'excursion_started_at':None,
             'held_stop_price':None,'held_target_price':None,'held_horizon':None,
             'held_opened_at':None,
         }
@@ -179,7 +181,11 @@ class CurrencyPortfolioTests(TestCase):
             {'trade_id':'fill-close','client_order_id':'order-close','side':'SELL','lots':1,
              'price':'12.800','fee_rub':None,'executed_at':t+timedelta(hours=1),'action':'CLOSE',
              'meta_direction':'LONG','horizon':'5m','stop_price':None,
-             'target_price':None,'exit_reason':'TAKE_PROFIT','manual':False,'signal_tier':None},
+             'target_price':None,'exit_reason':'TAKE_PROFIT','manual':False,'signal_tier':None,
+             'currency_excursion_snapshot':{
+                 'version':'CURRENCY_LIVE_EXCURSION_V1','direction':'LONG',
+                 'entry_price':'12.700','mfe_price':'12.850','mae_price':'12.680',
+                 'mfe_pct':'1.1811023622','mae_pct':'0.1574803150'}},
         ]
         fees=[
             {'client_order_id':'order-open','cumulative_fee_rub':'2','filled_lots':1},
@@ -193,6 +199,13 @@ class CurrencyPortfolioTests(TestCase):
         self.assertEqual(trade['execution_source'],'LIVE_BROKER_LEDGER')
         self.assertAlmostEqual(trade['gross_pnl_rub'],100.0)
         self.assertAlmostEqual(trade['net_pnl_rub'],96.0)
+        self.assertAlmostEqual(trade['mfe_pct'],1.1811023622)
+        self.assertAlmostEqual(trade['mae_pct'],-0.1574803150)
+        self.assertGreater(trade['capture_ratio'],0.0)
+        self.assertGreater(trade['live_giveback_pct'],0.0)
+        shadow=trade['payload']['currency_live_management_shadow']
+        self.assertTrue(shadow['mfe_threshold_reached'])
+        self.assertFalse(shadow['automatic_action'])
         merged=CD.merge_trade_history(
             [{'trade_id':'paper-cur','portfolio_name':'Currency','closed_at':t.isoformat()},
              {'trade_id':'paper-champ','portfolio_name':'Champion','closed_at':t.isoformat()}],
@@ -217,6 +230,8 @@ class CurrencyPortfolioTests(TestCase):
             signed_lots=1,average_entry_price='12.700',realized_pnl_rub='0',
             fees_rub='2',high_water_rub='10048',broker_signed_lots=1,
             last_mark_price='12.750',last_mark_observed_at=t+timedelta(minutes=5),
+            excursion_entry_price='12.700',excursion_direction='LONG',
+            mfe_price='12.780',mae_price='12.690',excursion_started_at=t,
             held_stop_price='12.650',held_target_price='12.800',
             held_horizon='5m',held_opened_at=t.isoformat())
         fills=[{'trade_id':'fill-open','client_order_id':'order-open','side':'BUY','lots':1,
@@ -237,6 +252,11 @@ class CurrencyPortfolioTests(TestCase):
         self.assertEqual(pos['direction'],'LONG')
         self.assertAlmostEqual(pos['unrealized_pnl_rub'],50.0)
         self.assertAlmostEqual(pos['total_trade_pnl_rub'],48.0)
+        self.assertGreater(pos['mfe_pct'],0.15)
+        self.assertLess(pos['mae_pct'],0.0)
+        self.assertEqual(pos['management_evidence_status'],'DURABLE_LIVE_PATH')
+        self.assertTrue(pos['currency_live_management_shadow']['profit_protection_candidate'])
+        self.assertFalse(pos['currency_live_management_shadow']['automatic_action'])
         self.assertEqual(cur['admission_trace'][0]['reason'],'KEEP')
         self.assertTrue(cur['live_trading_enabled'])
 
