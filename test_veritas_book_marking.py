@@ -117,6 +117,16 @@ class MemoryConnection:
                                        'SELECT asset,payload FROM paper_positions')):
                 raise AssertionError(query)
             return SimpleNamespace(fetchall=lambda: rows)
+        if query.startswith('WITH delta AS') and 'UPDATE paper_positions AS target' in query:
+            batch=json.loads(params[0])
+            for item in batch:
+                row=next(r for r in self.rows if
+                         (r['portfolio_name'],r['asset'])==(item['portfolio_name'],item['asset']))
+                change=item['patch']
+                row['payload']=(change if item['replace_payload']
+                                else dict(row['payload'],**change))
+                row.update(last_price=float(item['last_price']),updated_at=item['updated_at'])
+            return SimpleNamespace(rowcount=len(batch))
         if query.startswith('UPDATE paper_positions'):
             price, ts, encoded, name, asset = params
             row = next(r for r in self.rows if (r['portfolio_name'], r['asset']) == (name, asset))
@@ -207,9 +217,12 @@ class BookMarkingTests(unittest.TestCase):
                          H._v90j_mark_open_positions(new, PORTFOLIO, {'BTC': 9999.}, NOW))
         self.assertEqual(new.rows, old.rows)
         self.assertEqual(new.rows[0]['last_price'], 137.)  # the verified quote, not scalar prices
-        writes = [params for sql, params in new.statements if sql.startswith('UPDATE')]
+        writes = [(sql,params) for sql,params in new.statements
+                  if sql.startswith('WITH delta AS')]
         self.assertEqual(len(writes), 1)
-        self.assertLess(len(writes[0][2]), 1000)
+        batch=json.loads(writes[0][1][0])
+        self.assertEqual(len(batch),1)
+        self.assertLess(len(json.dumps(batch[0]['patch']).encode('utf-8')),1000)
         self.assertEqual(new.rows[0]['payload']['retained_history'], before['payload']['retained_history'])
 
     def test_exact_same_source_observation_is_a_noop(self):
@@ -227,7 +240,8 @@ class BookMarkingTests(unittest.TestCase):
         G._quotes['BTC']=q
         c=MemoryConnection([row])
         self.assertEqual(H._v90j_mark_open_positions(c,PORTFOLIO,{'BTC':9999.},NOW),0)
-        self.assertFalse(any(sql.startswith('UPDATE') for sql,_ in c.statements))
+        self.assertFalse(any(sql.startswith('UPDATE') or sql.startswith('WITH delta AS')
+                             for sql,_ in c.statements))
         self.assertEqual(c.rows[0],row)
 
     def test_marker_preserves_nonobject_behavior_and_skips_unusable_quotes(self):
