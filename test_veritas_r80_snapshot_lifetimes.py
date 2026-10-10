@@ -41,7 +41,9 @@ def load_r80(name, namespace, *, legacy=False):
             and n.value.value is None and
             {t.id for t in n.targets if isinstance(t, ast.Name)} == released)]
     ns = {'COMMISSION': .0004, 'VC': VC, 'VPS': VPS, 'VBM': VBM, 'PIO': PIO,
-          'json': json, **namespace}
+          'json': json,
+          '_v90j_json': lambda value: value if isinstance(value,dict) else json.loads(value or '{}'),
+          **namespace}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(RUNTIME), 'exec'), ns)
     return ns[name]
 
