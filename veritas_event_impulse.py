@@ -158,7 +158,8 @@ def assess(row, direction, cfg=None, now=None):
     breakout = bool(event_direction == direction and
                     ("BREAKOUT" in event_type or "CONTINUATION" in event_type))
     shock = event.get("intrabar_volatility_shock") or {}
-    news = news_check(row, direction, now)
+    news_clock = now if now is not None else event.get("signal_at")
+    news = news_check(row, direction, news_clock)
     game_changer = bool(
         breakout and event.get("game_changer_extreme") is True
         and event.get("senior_level_break") is True
@@ -174,7 +175,7 @@ def assess(row, direction, cfg=None, now=None):
             "breakout": True, "activity_confirmed": bool(event.get("activity_confirmed")),
             "volatility_expansion": True, "intrabar_volatility_shock": shock,
             "senior_level_break": True, "game_changer_extreme": True,
-            "immediate_max": bool(cfg.get("game_changer_immediate_max", True)),
+            "immediate_max": bool(cfg.get("game_changer_immediate_max", True) and not news["conflict"]),
             "forming_bar_close_required": bool(cfg.get("forming_bar_close_required", False)),
             "news_confirmed": news["confirmed"], "news_conflict": news["conflict"],
             "news_check": news, "news_check_required": True,
