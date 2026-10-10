@@ -44,8 +44,8 @@ jobs:
         env:
           VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
         run: |
-          python -m py_compile veritas_learning_state.py veritas_autonomous_learning.py veritas_learning_bridge.py veritas_continuous_learning.py veritas_trade_learning.py veritas_learning_measurement.py veritas_knowledge_discovery.py veritas_knowledge_validation.py veritas_learning_v2.py veritas_learning_v2_registry.py veritas_learning_v2_replay.py veritas_learning_v2_replay_eval.py veritas_learning_worker.py
-          python -m unittest -v test_veritas_learning_state.py test_veritas_autonomous_learning.py test_veritas_learning_bridge.py test_veritas_continuous_learning.py test_veritas_learning_backlog.py test_veritas_forecast_cleanup.py test_veritas_learning_runtime.py test_veritas_quote_learning.py test_veritas_trade_learning.py test_veritas_knowledge_discovery.py test_veritas_knowledge_validation.py test_veritas_learning_v2.py test_veritas_learning_v2_runtime.py test_veritas_promotion_shadow.py test_veritas_learning_v2_registry.py test_veritas_learning_v2_replay.py test_veritas_learning_v2_replay_eval.py
+          python -m py_compile veritas_learning_state.py veritas_autonomous_learning.py veritas_learning_bridge.py veritas_continuous_learning.py veritas_trade_learning.py veritas_learning_measurement.py veritas_knowledge_discovery.py veritas_knowledge_validation.py veritas_learning_v2.py veritas_learning_v2_registry.py veritas_learning_v2_replay.py veritas_learning_v2_replay_eval.py veritas_learning_worker.py veritas_currency_live_learning.py
+          python -m unittest -v test_veritas_learning_state.py test_veritas_autonomous_learning.py test_veritas_learning_bridge.py test_veritas_continuous_learning.py test_veritas_learning_backlog.py test_veritas_forecast_cleanup.py test_veritas_learning_runtime.py test_veritas_quote_learning.py test_veritas_trade_learning.py test_veritas_currency_live_learning.py test_veritas_knowledge_discovery.py test_veritas_knowledge_validation.py test_veritas_learning_v2.py test_veritas_learning_v2_runtime.py test_veritas_promotion_shadow.py test_veritas_learning_v2_registry.py test_veritas_learning_v2_replay.py test_veritas_learning_v2_replay_eval.py
       - name: Create isolated Currency trading test database
         run: |
           python - <<'PY'
@@ -95,7 +95,9 @@ jobs:
       - name: Canonical cost policy regressions
         run: python -m unittest -v test_veritas_r82_cost_policy.py test_veritas_cost_audit_repairs.py
       - name: Currency portfolio regressions
-        run: python -m unittest -v test_veritas_currency_portfolio.py test_veritas_currency_dashboard_loading.py test_veritas_partial_portfolio_refresh.py test_veritas_portfolio_read_model.py
+        run: |
+          python -m py_compile veritas_currency_dashboard.py veritas_currency_live_learning.py
+          python -m unittest -v test_veritas_currency_portfolio.py test_veritas_currency_live_learning.py test_veritas_currency_dashboard_loading.py test_veritas_partial_portfolio_refresh.py test_veritas_portfolio_read_model.py
       - name: Bounded portfolio delivery and matching accounting snapshot
         env:
           VERITAS_QUALITY_TEST_DSN: postgresql://postgres:ci_ephemeral_test_only@localhost:5432/veritas_quality_test
