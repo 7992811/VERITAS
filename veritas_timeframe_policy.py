@@ -128,13 +128,13 @@ def geometry(row, price=None, direction=None, stop_override=None, existing_targe
     px = _number(price if price is not None else r.get('price'))
     direction = direction or r.get('research_decision') or r.get('decision')
     stop = _number(stop_override if stop_override is not None else event.get('stop_price'))
+    new_rule = SB.applies(context_of(r))
     # Adds retain the held trade's executable target. The new event remains
     # immutable evidence of confirmation, not permission to replace that target.
     game_changer=bool(new_rule and event.get('game_changer_extreme') is True)
     target = _number(existing_target_price if existing_target_price is not None
                      else (event.get('runner_target_price') if game_changer else event.get('target_price')))
     sign = 1 if direction == 'LONG' else -1
-    new_rule = SB.applies(context_of(r))
     out = {'version':SB.VERSION if new_rule else VERSION,
            'eligible':False, 'reason':'SAME_TF_INVALID_GEOMETRY'}
     if new_rule and not SB.validate_event(event, context_of(r).get('source_identity'))['eligible']:
