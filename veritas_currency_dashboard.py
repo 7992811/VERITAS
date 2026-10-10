@@ -12,6 +12,8 @@ from decimal import Decimal, InvalidOperation
 import hashlib
 import os
 
+import veritas_canonical_constitution as CTC
+
 PORTFOLIO = "Currency"
 ASSET = "CNYRUBF"
 ALLOCATION_RUB = Decimal("10000")
@@ -516,6 +518,8 @@ def _portfolio(account, active, closed_trades, multiplier, checked_at, environme
         Decimal("100") * max(ZERO, Decimal("1") - nav/high_water)
         if nav is not None and high_water is not None and high_water > 0 else None
     )
+    risk_profile = CTC.currency_live_risk_policy(
+        float(drawdown / Decimal("100")) if drawdown is not None else 0.0)
     return {
         "name": PORTFOLIO,
         "display_name": PORTFOLIO,
@@ -559,7 +563,17 @@ def _portfolio(account, active, closed_trades, multiplier, checked_at, environme
         "weekend_carry_allowed": True,
         "max_gross_limit": 10.0,
         "leverage_limit": 10.0,
-        "hard_drawdown_limit_pct": 35.0,
+        "hard_drawdown_limit_pct": 100.0 * float(risk_profile["hard_drawdown_stop"]),
+        "risk_governor": {
+            "state": risk_profile["state"],
+            "new_risk": risk_profile["state"] != "HARD_STOP",
+            "max_gross": risk_profile["max_gross"],
+            "hard_drawdown_limit": risk_profile["hard_drawdown_stop"],
+            "size_multiplier": risk_profile["size_multiplier"],
+            "max_stop_risk_nav": risk_profile["max_stop_risk_nav"],
+            "profile": "CURRENCY",
+        },
+        "live_risk_profile": risk_profile,
     }
 
 
@@ -669,14 +683,11 @@ def overlay_portfolio(report, live):
             row = dict(original)
             admission = row.get("admission_trace")
             current = row.get("current_cny_admission")
-            risk = row.get("risk_governor")
             row.update(portfolio)
             if admission is not None:
                 row["admission_trace"] = admission
             if current is not None:
                 row["current_cny_admission"] = current
-            if risk is not None:
-                row["risk_governor"] = risk
             rows.append(row)
             replaced = True
         else:
