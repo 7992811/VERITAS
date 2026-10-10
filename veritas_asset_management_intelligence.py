@@ -213,15 +213,30 @@ def _query_fresh_portfolio(c, epoch):
 
 
 def _query_learning(c):
-    rows = c.execute("""
+    rows = list(c.execute("""
       SELECT closed_at,asset,horizon,regime,capture_ratio,movement_realization_ratio,
-             giveback_pct,primary_attribution,attributions,net_pnl_rub
+             giveback_pct,primary_attribution,attributions,net_pnl_rub,
+             FALSE AS currency_live, FALSE AS shadow_candidate
       FROM v90_learning_episodes
       WHERE learning_eligible=TRUE
         AND primary_attribution<>'ADMINISTRATIVE_EXIT_EXCLUDED'
       ORDER BY closed_at ASC
       LIMIT 500
-    """).fetchall()
+    """).fetchall())
+    try:
+        rows.extend(c.execute("""
+          SELECT closed_at,asset,horizon,NULL::text AS regime,capture_ratio,
+                 movement_realization_ratio,giveback_pct,primary_attribution,
+                 attributions,net_pnl_rub,TRUE AS currency_live,shadow_candidate
+          FROM currency_live_learning_episodes
+          WHERE learning_eligible=TRUE
+          ORDER BY closed_at ASC
+          LIMIT 200
+        """).fetchall())
+    except Exception:
+        pass
+    rows.sort(key=lambda r: str((dict(r) if not isinstance(r,dict) else r).get("closed_at") or ""))
+    rows = rows[-500:]
     z = []
     for r0 in rows or []:
         r = dict(r0)
@@ -246,8 +261,14 @@ def _query_learning(c):
         return sum(1 for r in a if set(r.get("attributions") or []) & BAD_LEARNING_ATTRS) / len(a) if a else None
     def avg_real(a):
         return _mean([r.get("movement_realization_ratio") for r in a])
+    currency_live_n=sum(1 for r in z if r.get("currency_live") is True)
+    currency_live_shadow_candidates=sum(
+        1 for r in z if r.get("currency_live") is True and r.get("shadow_candidate") is True)
     return {
         "n": n, "status": "MEASURED" if n >= 2 else "BUILDING",
+        "currency_live_n":currency_live_n,
+        "currency_live_shadow_candidates":currency_live_shadow_candidates,
+        "currency_live_share":currency_live_n/n if n else 0.0,
         "early_n": len(early), "recent_n": len(recent), "avg_capture_ratio": capture,
         "avg_movement_realization_ratio": realization,
         "avg_giveback_pct": giveback,
