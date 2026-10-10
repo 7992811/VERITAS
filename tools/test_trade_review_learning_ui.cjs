@@ -19,7 +19,7 @@ const context=vm.createContext({
   fetch:async()=>({ok:false,status:503,json:async()=>({})}),
 });
 vm.runInContext(script.replace(/\}\)\(\);\s*$/,
-  'globalThis.ui={st,renderReview,reviewSetTab,reviewTradeModel,aggregateMissed,aggregateClosedTradeEvidence,renderAutonomousTradeLearning,hypothesisRuleText};})();'),
+  'globalThis.ui={st,renderReview,reviewSetTab,reviewTradeModel,aggregateMissed,aggregateClosedEvidence,hypothesisRuleText};})();'),
   context,{timeout:2000});
 const ui=context.ui;
 ui.st.trades={trades:[{
@@ -28,12 +28,7 @@ ui.st.trades={trades:[{
   avg_entry_price:100,avg_exit_price:99.9,net_pnl_rub:-120,gross_pnl_rub:-100,
   payload:{mfe_pct:0.22,mae_pct:-0.08,initial_stop_price:99.5}
 }]};
-ui.st.autonomous={counts:{direction:40,trade:8},
-  candidates:[{candidate_id:'a1',kind:'SIZE_DOWN_UNCALIBRATED',state:'evaluating',training_n:32,
-    scope:{asset:'BTC',horizon:'5m',regime:'TREND'},evidence_valid:true,profitability_proven:false,
-    monitor_evidence:{n:12,days:4,win_rate:.58,mean_delta:.04,base_drawdown_r:2.1,candidate_drawdown_r:1.8},
-    reasons:['INSUFFICIENT_TEMPORAL_COVERAGE']}],
-  learning_v2:{
+ui.st.autonomous={counts:{direction:40,trade:8},learning_v2:{
   hypotheses:[{hypothesis_id:'h1',kind:'ENTRY_BLOCKER_RELAXATION',scope:{asset:'BTC',horizon:'5m',regime:'TREND'},
     proposal:{blocker:'RISK_REWARD_GATE',action:'SHADOW_REEVALUATE_AFTER_BLOCK'},
     evidence:{n:9,mean_abs_move:0.006},mode:'SHADOW_ONLY'}],
@@ -56,20 +51,15 @@ assert.match(elements.reviewSummary.innerHTML,/Win-rate исходов<\/span><b
 assert.match(elements.reviewSummary.innerHTML,/P&L исходов/);
 assert.match(elements.reviewSummary.innerHTML,/Replay Stop \/ Exit<\/span><b>10 \/ 7<\/b>/);
 assert.match(elements.reviewSummary.innerHTML,/Упущено \/ обучаемо/);
-assert.match(elements.reviewSummary.innerHTML,/L2 \/ авто \/ подтвержд\./);
+assert.match(elements.reviewSummary.innerHTML,/Кандидаты \/ shadow/);
 assert.match(elements.reviewBody.innerHTML,/Закрытые сделки · плотный разбор/);
 assert.match(elements.reviewBody.innerHTML,/outcome-only 12/);
 assert.match(elements.reviewBody.innerHTML,/P&L факт \/ cf/);
 assert.match(elements.reviewBody.innerHTML,/MFE \/ MAE/);
 assert.match(elements.reviewBody.innerHTML,/Вход → выход/);
 assert.match(elements.reviewBody.innerHTML,/контрфакт закрыт/);
-assert.match(elements.reviewBody.innerHTML,/Автообучение результата и размера/);
-assert.match(elements.reviewBody.innerHTML,/Размер · без калибровки/);
-assert.match(elements.reviewBody.innerHTML,/Future N/);
-assert.match(elements.reviewBody.innerHTML,/DD база → кандидат/);
-assert.match(elements.reviewBody.innerHTML,/Future validation/);
-assert.match(elements.reviewBody.innerHTML,/Replay \/ Shadow/);
-assert.match(elements.reviewBody.innerHTML,/Production candidate/);
+assert.match(elements.reviewBody.innerHTML,/будущая проверка/);
+assert.match(elements.reviewBody.innerHTML,/replay\/shadow/);
 assert.match(elements.reviewBody.innerHTML,/Упущенные возможности/);
 assert.match(elements.reviewBody.innerHTML,/Подтверждено в shadow/);
 assert.match(elements.reviewBody.innerHTML,/не доказанный исполнимый P&L/);
