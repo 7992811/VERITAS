@@ -231,8 +231,12 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
     mode=str(p.get("mode") or "")
     currency_role=None
     if mode=="CURRENCY":
+        bridge=getattr(CTC,"CURRENCY_EVENT_IMPULSE_POLICY",{}) or {}
+        bridge_active=bool(bridge.get("enabled")
+                           and bridge.get("allow_immediate_structural_entry"))
         work["_currency_game_changer"]=bool(
-            game_changer.get("eligible") and game_changer.get("immediate_max"))
+            bridge_active and game_changer.get("eligible") and game_changer.get("immediate_max"))
+        work["_currency_event_impulse_policy"]=dict(bridge)
         currency_role=VROLE.gate(work,mode)
         if not currency_role.get("eligible"):
             return {"open":False,"fraction":0.0,"reason":currency_role["reason"],
