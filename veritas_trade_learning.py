@@ -264,6 +264,8 @@ class TradeLearning:
     def ensure_schema(self,context=None):
         with self._transaction(context) as c:
             getattr(self.ns['VP'],'_v90r29_ensure')(c)
+            import veritas_currency_live_learning as CURRENCY_LIVE
+            CURRENCY_LIVE.ensure_schema_on(c)
             c.execute('''CREATE TABLE IF NOT EXISTS learning_trade_receipts (
                 trade_id text PRIMARY KEY,asset text NOT NULL,event_id text NOT NULL,
                 evidence_hash text NOT NULL,observation jsonb NOT NULL,valid boolean NOT NULL DEFAULT TRUE,
@@ -281,6 +283,8 @@ class TradeLearning:
         try:
             if phase=='materialize':
                 with self._transaction(context) as c:
+                    import veritas_currency_live_learning as CURRENCY_LIVE
+                    result['currency_live_shadow_learning']=CURRENCY_LIVE.sync_on(c,environment='production')
                     selected='''SELECT t.trade_id FROM paper_trades t
                         LEFT JOIN v90_learning_episodes e ON e.trade_id=t.trade_id
                         WHERE (e.trade_id IS NULL
