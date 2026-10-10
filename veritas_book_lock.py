@@ -24,6 +24,7 @@ class PriorityRLock:
         self._ordinary_waiters = 0
         self._blocking_waiters = {}
         self._entry_turns = {}
+        self._protective_turns = {}
         self._owner_name = None
         self._acquired_at = None
         self._last_hold_seconds = 0.0
@@ -49,12 +50,14 @@ class PriorityRLock:
                 while True:
                     now = time.monotonic()
                     self._entry_turns = {owner: until for owner, until in self._entry_turns.items() if until > now}
+                    self._protective_turns = {owner: until for owner, until in self._protective_turns.items() if until > now}
                     reserved_elsewhere = bool(self._entry_turns) and ident not in self._entry_turns
+                    protection_reserved_elsewhere = bool(self._protective_turns) and ident not in self._protective_turns
                     oldest = next(iter(self._blocking_waiters), None)
                     age_remaining = (self._blocking_waiters[oldest] + ORDINARY_AGING_SECONDS - now
                                      if oldest is not None else None)
                     aged = oldest if age_remaining is not None and age_remaining <= 0 else None
-                    ordinary_blocked = (self._priority_waiters or
+                    ordinary_blocked = (self._priority_waiters or protection_reserved_elsewhere or
                         (aged is not None and aged != ident) or (aged is None and reserved_elsewhere))
                     blocked = self._owner is not None or (not priority and ordinary_blocked)
                     if not blocked:
@@ -66,6 +69,9 @@ class PriorityRLock:
                         return False
                     # A stopped entry worker cannot strand ordinary accounting.
                     # Wake at the lease boundary even without another notify.
+                    if not priority and protection_reserved_elsewhere:
+                        lease = max(0., min(self._protective_turns.values()) - now)
+                        remaining = lease if remaining is None else min(remaining, lease)
                     if not priority and aged is None and reserved_elsewhere:
                         lease = max(0., min(self._entry_turns.values()) - now)
                         remaining = lease if remaining is None else min(remaining, lease)
@@ -74,10 +80,12 @@ class PriorityRLock:
                     if not priority and age_remaining is not None and age_remaining > 0:
                         remaining = age_remaining if remaining is None else min(remaining, age_remaining)
                     self._condition.wait(remaining)
-                self._last_handoff_reason = ('PROTECTIVE' if priority else
+                self._last_handoff_reason = ('PROTECTIVE_PRECLAIM' if priority and ident in self._protective_turns else
+                    'PROTECTIVE' if priority else
                     'AGED_ORDINARY' if aged == ident else
                     'RESERVED_ENTRY' if ident in self._entry_turns else 'ORDINARY')
                 self._entry_turns.pop(ident, None)
+                self._protective_turns.pop(ident, None)
                 self._owner, self._depth = ident, 1
                 self._owner_name = threading.current_thread().name[:96]
                 self._acquired_at = time.monotonic()
@@ -87,6 +95,23 @@ class PriorityRLock:
                     self._blocking_waiters.pop(ident, None)
                 setattr(self, counter, getattr(self, counter) - 1)
                 self._condition.notify_all()
+
+    def reserve_protective_turn(self, seconds=12.):
+        """Preclaim the next free book turn while protection prepares fresh quotes.
+
+        The lease never interrupts a current owner and expires automatically so
+        a stalled protection worker cannot strand ordinary accounting.
+        """
+        if not math.isfinite(seconds) or not 0 < seconds <= 15:
+            raise ValueError('protective preclaim must be within 15 seconds')
+        with self._condition:
+            self._protective_turns[threading.get_ident()] = time.monotonic() + seconds
+            self._condition.notify_all()
+
+    def cancel_protective_turn(self):
+        with self._condition:
+            self._protective_turns.pop(threading.get_ident(), None)
+            self._condition.notify_all()
 
     def reserve_entry_turn(self, seconds=20.):
         """A bounded retry handoff; never outrank a queued protective exit."""
@@ -123,6 +148,7 @@ class PriorityRLock:
                     'ordinary_waiters':self._ordinary_waiters,
                     'oldest_blocking_wait_seconds':max(0., now-oldest) if oldest is not None else 0.,
                     'last_handoff_reason':self._last_handoff_reason,
+                    'protective_reservations':sum(until > now for until in self._protective_turns.values()),
                     'entry_reservations':sum(until > now for until in self._entry_turns.values())}
 
     def __enter__(self):
