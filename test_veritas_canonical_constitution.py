@@ -132,7 +132,15 @@ class CanonicalConstitutionDeclaredGapsTests(unittest.TestCase):
         self.assertEqual(runtime["max_gross"], 10.0)
         self.assertEqual(runtime["hard_drawdown"], 0.35)
         self.assertTrue(runtime["weekend_carry_allowed"])
-        self.assertEqual(canonical["runtime_status"], "CONFIGURED_PAPER")
+        self.assertEqual(canonical["runtime_status"], "LIVE_RUNTIME_GATED")
+        self.assertTrue(canonical["live_trading_capable"])
+        self.assertTrue(canonical["live_trading_enabled"])
+        live = C.currency_live_risk_policy(0.0)
+        self.assertEqual(live["profile"], "CURRENCY")
+        self.assertEqual(live["max_gross"], 10.0)
+        self.assertEqual(live["max_single_asset_fraction"], 10.0)
+        self.assertEqual(live["hard_drawdown_stop"], 0.35)
+        self.assertEqual(live["max_stop_risk_nav"], 0.15)
 
 
 if __name__ == "__main__":
