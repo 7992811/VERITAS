@@ -56,7 +56,8 @@ class PendingQuoteTests(unittest.TestCase):
         if foreign:fresh['contract']['instrument_uid']='OTHER'
         if target:fresh['price']=self.row['timeframe_entry_context']['event']['target_price']
         supplied=dict(self.row,_execution_quote=fresh)
-        mutex=SimpleNamespace(acquire=Mock(return_value=False),reserve_entry_turn=Mock(),cancel_entry_turn=Mock())
+        mutex=SimpleNamespace(acquire=Mock(return_value=False),reserve_entry_turn=Mock(),cancel_entry_turn=Mock(),
+                              snapshot=Mock(return_value={'ordinary_waiters':0}))
         connect=Mock(side_effect=AssertionError('no database during busy renewal'))
         original=deepcopy(self.row)
         with patch.dict(sys.modules,{'veritas_portfolio_runtime':SimpleNamespace()}),patch.object(G,'_mutex',mutex),patch.object(G,'refresh_execution_row',return_value=supplied) as refresh,patch.object(SL,'_wall_clock',return_value=clock):
@@ -98,7 +99,7 @@ class PendingQuoteTests(unittest.TestCase):
                     before, called, database = deepcopy(rows), [], BusyDatabase()
                     mutex = (PriorityRLock() if lane == 'DATABASE' else SimpleNamespace(
                         acquire=Mock(return_value=False), reserve_entry_turn=Mock(),
-                        cancel_entry_turn=Mock()))
+                        cancel_entry_turn=Mock(), snapshot=Mock(return_value={'ordinary_waiters':0})))
 
                     def current(row, now=None):
                         self.assertEqual(now, clock)
@@ -120,9 +121,9 @@ class PendingQuoteTests(unittest.TestCase):
                         return dict(row, _execution_quote=quote)
 
                     reserve = mutex.reserve_entry_turn
-                    def reserve_after_observations():
+                    def reserve_after_observations(*,seconds=2.0):
                         self.assertEqual(called, ['CNYRUBF', 'GOLD'])
-                        return reserve()
+                        return reserve(seconds=seconds)
 
                     connect = (Mock(return_value=database) if lane == 'DATABASE' else
                                Mock(side_effect=AssertionError('Local busy must not open a database')))
