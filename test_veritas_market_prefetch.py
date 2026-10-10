@@ -85,7 +85,13 @@ class MoexExtendedSessionTests(unittest.TestCase):
         self.assertFalse(moex_index_session_open(
             datetime(2026,10,9,20,50,0,tzinfo=timezone.utc)))   # 23:50 MSK
         self.assertFalse(moex_index_session_open(
-            datetime(2026,10,10,12,0,tzinfo=timezone.utc)))     # Saturday
+            datetime(2026,10,10,12,0,tzinfo=timezone.utc)))     # Saturday, no official proof
+        self.assertTrue(moex_index_session_open(
+            datetime(2026,10,10,7,25,tzinfo=timezone.utc),
+            official_quote_fresh=True))                         # 10:25 MSK weekend trading day
+        self.assertFalse(moex_index_session_open(
+            datetime(2026,10,10,16,0,tzinfo=timezone.utc),
+            official_quote_fresh=True))                         # 19:00 MSK close
         self.assertTrue(moex_index_session_open(
             datetime(2026,9,25,10,0,tzinfo=timezone.utc)))      # legacy 13:00 MSK
         self.assertFalse(moex_index_session_open(
@@ -109,6 +115,23 @@ class MoexExtendedSessionTests(unittest.TestCase):
         self.assertTrue(raw['moex_session_repaired'])
         self.assertEqual(raw['moex_session_policy'],'IMOEX_EXTENDED_2026_09_26')
 
+    def test_fresh_official_quote_opens_designated_weekend_session(self):
+        now=datetime(2026,10,10,7,25,5,tzinfo=timezone.utc)  # 10:25:05 Moscow
+        b=self.bundle(observed='2026-10-10T07:24:58+00:00')
+        b['raw']['price']=2421.57
+        raw=normalize_moex_index_session(b,now)['raw']
+        self.assertTrue(raw['market_open'])
+        self.assertTrue(raw['source_gate_pass'])
+        self.assertTrue(raw['moex_session_repaired'])
+        self.assertEqual(raw['moex_session_policy'],'IMOEX_WEEKEND_TRADING_2026_09_26')
+
+    def test_weekend_without_fresh_official_quote_remains_closed(self):
+        now=datetime(2026,10,10,7,25,5,tzinfo=timezone.utc)
+        stale=self.bundle(observed='2026-10-10T07:22:00+00:00')
+        raw=normalize_moex_index_session(stale,now)['raw']
+        self.assertFalse(raw['market_open'])
+        self.assertFalse(raw['source_gate_pass'])
+
     def test_epoch_exchange_time_is_accepted_but_not_retrieval_time(self):
         now=datetime(2026,10,9,19,22,44,tzinfo=timezone.utc)
         b=self.bundle(observed=now.timestamp()-9)
@@ -120,7 +143,7 @@ class MoexExtendedSessionTests(unittest.TestCase):
         cases=[
             (datetime(2026,10,9,3,59,tzinfo=timezone.utc), self.bundle()),  # before 07:00 MSK
             (datetime(2026,10,9,20,50,tzinfo=timezone.utc), self.bundle(observed='2026-10-09T20:49:55+00:00')),
-            (datetime(2026,10,10,12,0,tzinfo=timezone.utc), self.bundle(observed='2026-10-10T11:59:55+00:00')),
+            (datetime(2026,10,10,16,0,tzinfo=timezone.utc), self.bundle(observed='2026-10-10T15:59:55+00:00')),
             (datetime(2026,9,25,19,0,tzinfo=timezone.utc), self.bundle(observed='2026-09-25T18:59:55+00:00')),
             (datetime(2026,10,9,19,22,44,tzinfo=timezone.utc), self.bundle(source='Yahoo Finance')),
         ]
