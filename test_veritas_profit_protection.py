@@ -107,6 +107,35 @@ class NetProtectionTests(unittest.TestCase):
         self.z['payload']['net_profit_protection']['checked_at'] = (self.now-timedelta(minutes=2)).isoformat()
         self.assertFalse(PP.is_protected(self.z))
 
+    def test_projected_add_floor_blocks_add_that_erases_existing_net_protection(self):
+        self.z['payload'].update(self.check())
+        self.assertTrue(self.check()['profit_protection_active'])
+        c = MagicMock()
+        cursor = MagicMock(); cursor.fetchall.return_value = [self.a]
+        c.execute.return_value = cursor
+        # Large expensive add raises the weighted entry enough that the old
+        # protected stop no longer covers the whole episode after costs.
+        result = PP.projected_add_floor(
+            c, self.z, add_fill_price=104, add_units=4000, add_fee_rub=166.4,
+            mark_price=104, now=self.now)
+        self.assertTrue(result['applied'])
+        self.assertFalse(result['eligible'])
+        self.assertEqual(result['reason'],'PROTECTED_EPISODE_FLOOR_WOULD_BE_LOST')
+        self.assertFalse(result['projected']['profit_protection_active'])
+
+    def test_projected_add_floor_allows_small_add_when_same_stop_remains_net_positive(self):
+        self.z['payload'].update(self.check())
+        c = MagicMock()
+        cursor = MagicMock(); cursor.fetchall.return_value = [self.a]
+        c.execute.return_value = cursor
+        result = PP.projected_add_floor(
+            c, self.z, add_fill_price=104, add_units=50, add_fee_rub=2.08,
+            mark_price=104, now=self.now)
+        self.assertTrue(result['applied'])
+        self.assertTrue(result['eligible'])
+        self.assertEqual(result['reason'],'PROTECTED_EPISODE_FLOOR_PRESERVED')
+        self.assertTrue(result['projected']['profit_protection_active'])
+
     def test_aggressive_scale_does_not_bypass_net_check_with_trailing_stop(self):
         self.z['payload'] = {'profit_protection_active': True, 'trailing_stop': 101}
         quality = dict(confirmed=True, super=True, independent=6, rr=2, alignment=4)
