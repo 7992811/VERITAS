@@ -187,7 +187,9 @@ class ConnectionTests(unittest.TestCase):
         c.reader=FakeReader()
         with patch.object(T,'exact_instrument',side_effect=T.TBankError('INSTRUMENT_NOT_FOUND')):
             c.refresh()
-        self.assertEqual(c.status()['instrument_errors'],{a:'INSTRUMENT_NOT_FOUND' for a in T.DEFAULT_TICKERS})
+        expected={a:'INSTRUMENT_NOT_FOUND' for a in T.DEFAULT_TICKERS}
+        expected['MOEXF']='INDEX_FUTURE_EXECUTION_PROXY_UNAVAILABLE'
+        self.assertEqual(c.status()['instrument_errors'],expected)
         self.assertEqual(c.market_data()['quotes'],{})
 
 
