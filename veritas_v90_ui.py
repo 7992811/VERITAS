@@ -1078,7 +1078,7 @@ function selectSignal(k,scroll=false){
 
 
 const portfolioName=name=>({Impulse:'Импульсный',Aggressive:'Агрессивный',Champion:'Чемпион',Challenger:'Челленджер',Currency:'Currency'}[name]||name||'—');
-const currencyFallback=()=>({name:'Currency',display_name:'Currency',configuration_status:'CONFIGURED',allowed_assets:['CNYRUBF'],paper_trading_enabled:true,live_trading_enabled:false,capital_configured:true,initial_nav_rub:10000,max_gross_limit:10,leverage_limit:10,hard_drawdown_limit_pct:35,weekend_carry_allowed:true,positions_status:'UNAVAILABLE',risk_governor:{max_gross:10,hard_drawdown_limit:.35,profile:'CURRENCY'}});
+const currencyFallback=()=>({name:'Currency',display_name:'Currency',configuration_status:'CONFIGURED',allowed_assets:['CNYRUBF'],paper_trading_enabled:true,live_trading_capable:true,live_trading_enabled:true,runtime_status:'LIVE_RUNTIME_GATED',capital_configured:true,initial_nav_rub:10000,max_gross_limit:10,leverage_limit:10,hard_drawdown_limit_pct:35,weekend_carry_allowed:true,positions_status:'UNAVAILABLE',risk_governor:{max_gross:10,hard_drawdown_limit:.35,profile:'CURRENCY'}});
 const tone=value=>value==null?'':Number(value)>0?'ok':Number(value)<0?'bad':'';
 const signedPct=value=>value==null?'—':(Number(value)>0?'+':'')+pct(value);
 function portfolioView(p){
