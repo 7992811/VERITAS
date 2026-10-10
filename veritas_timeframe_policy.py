@@ -11,6 +11,7 @@ import veritas_canonical_constitution as CTC
 import veritas_price_source as VPS
 import veritas_timeframe_structure as TS
 import veritas_structural_breakout as SB
+import veritas_event_impulse as VEI
 
 VERSION = CTC.STRUCTURAL_ENTRY_POLICY['version']
 SECONDS = {'1m':60, '5m':300, '1h':3600, '4h':14400,
@@ -128,12 +129,14 @@ def geometry(row, price=None, direction=None, stop_override=None, existing_targe
     px = _number(price if price is not None else r.get('price'))
     direction = direction or r.get('research_decision') or r.get('decision')
     stop = _number(stop_override if stop_override is not None else event.get('stop_price'))
-    # Adds retain the held trade's executable target. The new event remains
-    # immutable evidence of confirmation, not permission to replace that target.
-    target = _number(existing_target_price if existing_target_price is not None
+    new_rule = SB.applies(context_of(r))
+    game_changer = bool(new_rule and event.get('game_changer_extreme') is True)
+    # During a game changer the old micro target is a reference, not an order.
+    # Economics use the sealed runner zone without rewriting a held target.
+    target = _number(event.get('runner_target_price') if game_changer else
+                     existing_target_price if existing_target_price is not None
                      else event.get('target_price'))
     sign = 1 if direction == 'LONG' else -1
-    new_rule = SB.applies(context_of(r))
     out = {'version':SB.VERSION if new_rule else VERSION,
            'eligible':False, 'reason':'SAME_TF_INVALID_GEOMETRY'}
     if new_rule and not SB.validate_event(event, context_of(r).get('source_identity'))['eligible']:
@@ -150,9 +153,10 @@ def geometry(row, price=None, direction=None, stop_override=None, existing_targe
         held = ((r.get('trade_plan') or {}).get('active_target_ladder') or [])
         ladder = deepcopy(held or [s for s in ladder
                                  if sign*(float(s['price'])-target) >= -1e-10])
-    weighted = sum(float(s['fraction'])*sign*(float(s['price'])-px)/px
-                   for s in ladder) if ladder else room
-    runner = float(ladder[-1]['price']) if ladder else target
+    weighted = (room if game_changer else
+                sum(float(s['fraction'])*sign*(float(s['price'])-px)/px
+                    for s in ladder) if ladder else room)
+    runner = target if game_changer else (float(ladder[-1]['price']) if ladder else target)
     return dict(out, eligible=True, reason='SAME_TF_GEOMETRY_OK', stop_price=stop,
                 target_price=target, remaining_move_pct=room, stop_distance_pct=risk,
                 reward_risk=weighted/risk, weighted_remaining_move_pct=weighted,
@@ -161,8 +165,10 @@ def geometry(row, price=None, direction=None, stop_override=None, existing_targe
                 structural_timeframe=event.get('structural_timeframe',event.get('timeframe')),
                 stop_timeframe=event.get('stop_timeframe',event.get('timeframe')),
                 atr_timeframe=event.get('atr_timeframe',event.get('timeframe')),
-                geometry_basis='STORED_POSITION_STOP_TARGET' if existing_target_price is not None
-                               else 'STRUCTURAL_EVENT')
+                geometry_basis='EVENT_IMPULSE_REFERENCE_ONLY' if game_changer
+                               else 'STORED_POSITION_STOP_TARGET' if existing_target_price is not None
+                               else 'STRUCTURAL_EVENT',
+                fixed_take_profit_deferred=game_changer,target_reference_only=game_changer)
 
 
 def prepare_row(row, price=None, now=None):
@@ -238,8 +244,21 @@ def prepare_row(row, price=None, now=None):
                         target_ladder=deepcopy(event['target_ladder']),
                         target_zones=deepcopy(event['target_zones']),
                         runner_target_price=event['runner_target_price'],
+                        fixed_take_profit_deferred=bool(event.get('game_changer_extreme')),
+                        target_reference_only=bool(event.get('game_changer_extreme')),
+                        event_impulse_exit_mode=('STRUCTURAL_EXHAUSTION_ONLY' if event.get('game_changer_extreme') else None),
+                        execution_style=('MARKETABLE_LIMIT_NEAREST_OFFER_SWEEP' if event.get('game_changer_extreme') else None),
+                        fill_confirmation_required=bool(event.get('game_changer_extreme')),
+                        partial_fill_policy=('REQUOTE_REMAINDER_WHILE_CANONICAL_ADMISSION_VALID' if event.get('game_changer_extreme') else None),
+                        reprice_policy=('REFRESH_TOP_OF_BOOK_RECHECK_STOP_RISK_NEWS_AND_ANTI_CHASE' if event.get('game_changer_extreme') else None),
+                        execution_instrument_required=bool(event.get('game_changer_extreme')),
+                        event_news_check=(VEI.news_check(x,direction,clock) if event.get('game_changer_extreme') else None),
                         take_profit_1=deepcopy(event['target_ladder'][0]),
                         take_profit_2=deepcopy(event['target_ladder'][1]) if len(event['target_ladder'])>1 else None)
+        if event.get('game_changer_extreme'):
+            plan.update(target_price=event['runner_target_price'],
+                        tactical_target_price=event['runner_target_price'],
+                        take_price=event['runner_target_price'])
     x['trade_plan'] = plan
     g = geometry(x, px, direction)
     gate = entry_gate(x, px, direction, now)
