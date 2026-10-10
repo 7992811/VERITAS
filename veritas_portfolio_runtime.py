@@ -4612,20 +4612,64 @@ def _v90r65_actual_genesis_fill_ok(row,price,direction,target_fraction):
     return {'eligible':ok,'blockers':blockers,'hard_blockers':hard,
             'actual_rr':rr,'actual_move':move,'modeled_cost':cost}
 
-def _r72_event_reentry_gate(c,name,asset,direction,event):
+def _r72_active_impulse_reentry(row,direction):
+    """Allow same-event restoration only after a premature TP in a live impulse."""
+    row=row or {}
+    cfg=((getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}).get('event_impulse') or {})
+    if not cfg.get('premature_tp_impulse_reentry'):
+        return {'eligible':False,'reason':'R72_IMPULSE_REENTRY_POLICY_DISABLED'}
+    tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
+    allowed=set(cfg.get('premature_tp_reentry_requires_signal_tier') or ('SUPER_LONG','SUPER_SHORT'))
+    expected='SUPER_LONG' if direction=='LONG' else 'SUPER_SHORT'
+    if tier!=expected or tier not in allowed:
+        return {'eligible':False,'reason':'R72_SUPER_SIGNAL_REQUIRED','signal_tier':tier}
+    impulse=VTDE.event_impulse_assess(row,direction)
+    if cfg.get('premature_tp_reentry_requires_active_impulse',True) and not impulse.get('eligible'):
+        return {'eligible':False,'reason':'R72_ACTIVE_IMPULSE_REQUIRED','event_impulse':impulse}
+    ti=row.get('trend_impulse') or {}
+    st=row.get('intraday_structure') or {}
+    flags=[ti.get('volatility_expansion'),st.get('volatility_expansion')]
+    explicit_contraction=any(value is False for value in flags)
+    active_expansion=bool(
+        impulse.get('eligible')
+        or any(value is True for value in flags)
+        or 'HIGH_VOL' in str(row.get('regime') or '')
+    )
+    if cfg.get('premature_tp_reentry_requires_no_volatility_contraction',True):
+        if explicit_contraction or not active_expansion:
+            return {'eligible':False,'reason':'R72_VOLATILITY_ALREADY_CONTRACTED',
+                    'event_impulse':impulse}
+    return {'eligible':True,'reason':'R72_PREMATURE_TP_IMPULSE_CONTINUATION',
+            'signal_tier':tier,'event_impulse':impulse,
+            'volatility_contracted':False}
+
+
+def _r72_event_reentry_gate(c,name,asset,direction,event,row=None):
     event_id=(event or {}).get('event_id')
     if not event_id:
         return {'eligible':False,'reason':'R72_EVENT_ID_MISSING'}
     try:
-        prior=c.execute("""SELECT trade_id FROM paper_trades
+        prior=c.execute("""SELECT trade_id,payload FROM paper_trades
             WHERE portfolio_name=%s AND asset=%s AND direction=%s
               AND (closed_at IS NOT NULL OR status IN ('CLOSED','CLOSE','EXITED'))
               AND payload->>'r66_event_id'=%s LIMIT 1""",
             (name,asset,direction,event_id)).fetchone()
     except Exception:
         return {'eligible':False,'reason':'R72_EVENT_HISTORY_UNAVAILABLE'}
-    return {'eligible':not bool(prior),'reason':'R72_EVENT_ALREADY_TRADED' if prior else 'R72_NEW_EVENT',
-            'event_id':event_id}
+    if not prior:
+        return {'eligible':True,'reason':'R72_NEW_EVENT','event_id':event_id}
+    p=_v90j_json(prior.get('payload') if isinstance(prior,dict) else None)
+    exit_reason=str(p.get('exit_reason') or p.get('close_reason') or '').upper()
+    continuation=_r72_active_impulse_reentry(row,direction)
+    if exit_reason.startswith('TAKE_PROFIT') and continuation.get('eligible'):
+        return {'eligible':True,
+                'reason':'R72_PREMATURE_TP_IMPULSE_CONTINUATION_REENTRY',
+                'event_id':event_id,'prior_trade_id':prior.get('trade_id'),
+                'prior_exit_reason':exit_reason,
+                'same_event_reuse':True,'impulse_continuation':continuation}
+    return {'eligible':False,'reason':'R72_EVENT_ALREADY_TRADED',
+            'event_id':event_id,'prior_exit_reason':exit_reason,
+            'impulse_continuation':continuation}
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     row=dict(row or {})
@@ -4660,7 +4704,7 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
             if not event['eligible']:
                 _record_entry_outcome(row,'BLOCKED',event['reason'],trend_event=event)
                 return 0.0
-            reuse=_r72_event_reentry_gate(c,name,asset,direction,VTE.context_of(row).get('event'))
+            reuse=_r72_event_reentry_gate(c,name,asset,direction,VTE.context_of(row).get('event'),row=row)
             if not reuse['eligible']:
                 _record_entry_outcome(row,'BLOCKED',reuse['reason'],event_reentry=reuse)
                 return 0.0
