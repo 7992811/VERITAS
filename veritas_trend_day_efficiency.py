@@ -46,9 +46,9 @@ def event_impulse_assess(row, direction):
     if regime not in set(cfg.get('accepted_regimes') or ()):
         return dict(out,reason='EVENT_IMPULSE_HIGH_VOL_REGIME_REQUIRED',regime=regime)
     tier=str(row.get('signal_tier') or row.get('execution_signal_tier') or '')
-    expected_tier='SUPER_LONG' if direction=='LONG' else 'SUPER_SHORT'
-    if tier!=expected_tier or tier not in set(cfg.get('accepted_fast_tiers') or ()):
-        return dict(out,reason='EVENT_IMPULSE_SUPER_SIGNAL_REQUIRED',signal_tier=tier)
+    direction_tiers=(('LONG','SUPER_LONG') if direction=='LONG' else ('SHORT','SUPER_SHORT'))
+    if tier not in direction_tiers or tier not in set(cfg.get('accepted_fast_tiers') or ()):
+        return dict(out,reason='EVENT_IMPULSE_DIRECTIONAL_SIGNAL_REQUIRED',signal_tier=tier)
     hs=row.get('horizon_structure') or {}
     hs_direction=str(hs.get('direction') or row.get('horizon_structure_direction') or '')
     score=_num(hs.get('score'),row.get('horizon_structure_score'),0.0) or 0.0
