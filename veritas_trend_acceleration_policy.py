@@ -63,6 +63,16 @@ TREND_ACCELERATION_POLICY = {
         "defer_fixed_take_profit": True,
         "target_reference_mode": "HIGHER_TIMEFRAME_HIGHS_AND_ZONES",
         "reassess_targets_after_impulse_exhaustion": True,
+        "old_target_reactivation_forbidden": True,
+        "volatility_contraction_required": True,
+        "exhaustion_confirmation_observations": 2,
+        "post_impulse_target_basis": "CURRENT_STRUCTURE_AND_SENIOR_EXTREMES",
+        "reacceleration_defers_fixed_take_profit_again": True,
+        "premature_tp_impulse_reentry": True,
+        "premature_tp_reentry_requires_signal_tier": ("SUPER_LONG", "SUPER_SHORT"),
+        "premature_tp_reentry_requires_active_impulse": True,
+        "premature_tp_reentry_requires_no_volatility_contraction": True,
+        "premature_tp_same_event_reuse_allowed": True,
         "exit_authority": (
             "STRUCTURAL_BREAK", "CONFIRMED_REVERSAL", "TRAILING_STOP",
             "RISK_HARD_STOP", "PORTFOLIO_HARD_STOP",
@@ -75,7 +85,13 @@ TREND_ACCELERATION_POLICY = {
             "maximum portfolio exposure permitted by stop-risk immediately. "
             "Less extreme event impulses may scale in stages. News strengthens hold "
             "conviction but never delays the first structural entry. Do not execute "
-            "a fixed take-profit while the impulse remains active."
+            "a fixed take-profit while the impulse remains active. After confirmed "
+            "impulse exhaustion and volatility contraction, discard the entry-time "
+            "target ladder and rebuild TP/TP2 from current structure and senior-TF "
+            "extrema. If an old TP nevertheless closes a correct position while a "
+            "SUPER signal and the impulse remain active without volatility contraction, "
+            "restore the same-direction exposure as an impulse continuation, not as "
+            "reuse of a stale setup. Reacceleration disables fixed TP again."
         ),
     },
     "profit_protection": {
