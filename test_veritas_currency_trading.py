@@ -43,6 +43,7 @@ class Fixtures:
                                          0, 0, 0, 0, 100, 100, 1, self.now, True)
         self.quote = P.BrokerQuote(UID, D("12.344"), D("12.345"), self.now, True)
         self.row = structural_row(self.now, asset="CNYRUBF", price=12.345, width=.26)
+        self.row["calibrated_probability"] = .80
         self.admission = P.VCR.evaluate(self.row, CTC.runtime_portfolio_policy("Currency"), 0., self.now)
         self.assertTrue(self.admission["open"], self.admission)
         # Only this test fixture's requested fraction changes; the event, native
