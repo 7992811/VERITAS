@@ -22,6 +22,10 @@ STRATEGY_ROLE_POLICY = {
     "CHALLENGER": {"name":"CHALLENGER_LOCAL_TRIGGER","horizons":("5m","1h","4h"),
                    "require_trend":True,"min_structure_score":0.70,"min_independent":4,
                    "variant":"MATCHED_EVENT_PAPER_ONLY"},
+    "CURRENCY": {"name":"CURRENCY_STRUCTURAL_EXECUTION",
+                 "horizons":("1m","5m","1h","4h","1d","3d","7d"),
+                 "threshold":0.62,"strong_threshold":0.74,"min_independent":2,
+                 "game_changer_probability_bypass":True},
 }
 
 # Explicit owner correction, 2026-10-06. These are operational safeguards;
@@ -215,8 +219,8 @@ PORTFOLIO_POLICIES = {
         "manual_account_history_required":False,
         "max_single_asset_fraction":10.00,"max_gross":10.00,"leverage_limit":10.00,
         "hard_drawdown":0.35,"weekend_carry_allowed":True,"position_step":0.05,
-        "paper_trading_enabled":True,"live_trading_enabled":False,
-        "configuration_status":"CONFIGURED","runtime_status":"CONFIGURED_PAPER",
+        "paper_trading_enabled":True,"live_trading_capable":True,"live_trading_enabled":True,
+        "configuration_status":"CONFIGURED","runtime_status":"LIVE_RUNTIME_GATED",
     },
 }
 
@@ -290,6 +294,42 @@ LIVE_RISK_POLICY = {
     "allow_new_risk_without_durable_storage": False,
     "principle": "Live account remains independently fail-closed and stricter than research books.",
 }
+
+def currency_live_risk_policy(drawdown=0.0):
+    """Live Currency limits derived from the Currency portfolio itself.
+
+    Stop-risk, durable-state, broker-reconciliation and kill-switch controls
+    remain independent hard gates. Gross exposure follows the same Currency
+    drawdown governor used by canonical sizing instead of the unrelated generic
+    25% / 1.25x live profile.
+    """
+    portfolio = runtime_portfolio_policy("Currency")
+    profile = drawdown_profile("Currency", portfolio.get("mode"))
+    d = max(0.0, float(drawdown or 0.0))
+    if d >= float(profile["hard_drawdown"]):
+        state, gross, multiplier = "HARD_STOP", 0.0, 0.0
+    elif d >= float(profile["defense_1_until"]):
+        state, gross, multiplier = "DEFENSE_2", float(profile["defense_2_max_gross"]), float(profile["defense_2_multiplier"])
+    elif d >= float(profile["caution_until"]):
+        state, gross, multiplier = "DEFENSE_1", float(profile["defense_1_max_gross"]), float(profile["defense_1_multiplier"])
+    elif d >= float(profile["normal_until"]):
+        state, gross, multiplier = "CAUTION", float(profile["caution_max_gross"]), float(profile["caution_multiplier"])
+    else:
+        state, gross, multiplier = "NORMAL", float(profile["normal_max_gross"]), 1.0
+    stop_cap = float(PAPER_RISK_POLICY["per_idea_structural_stop_risk_cap_nav"])
+    return {
+        "profile":"CURRENCY","state":state,"drawdown":d,"size_multiplier":multiplier,
+        "max_stop_risk_nav":stop_cap,
+        "max_total_open_stop_risk_nav":stop_cap,
+        "max_correlated_stop_risk_nav":stop_cap,
+        "max_single_asset_fraction":float(portfolio["max_single_asset_fraction"]),
+        "max_gross":gross,
+        "hard_drawdown_stop":float(profile["hard_drawdown"]),
+        "daily_loss_stop":None,
+        "weekly_loss_stop":None,
+        "allow_new_risk_without_durable_storage":False,
+        "principle":"Currency live risk follows the Currency portfolio drawdown and gross policy; 15% stop-risk, reconciliation and kill-switch remain hard gates.",
+    }
 
 SOURCE_POLICY = {
     "one_valid_primary_source_for_paper": True,
