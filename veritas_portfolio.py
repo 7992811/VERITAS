@@ -40,8 +40,6 @@ POSITION_STEP=0.05
 
 POLICIES={name:CTC.runtime_portfolio_policy(name) for name in CTC.PORTFOLIO_ORDER}
 
-
-
 def _now(): return datetime.now(timezone.utc).isoformat()
 
 def _jsonable(x):
@@ -62,7 +60,6 @@ def _execution_price_or_none(prices, asset):
         return px if math.isfinite(px) and px>0 else None
     except (TypeError, ValueError):
         return None
-
 
 # VERITAS v90 portfolio migration
 V90_PORTFOLIOS = tuple(CTC.PORTFOLIO_ORDER)
@@ -94,13 +91,11 @@ PORTFOLIO_SCHEMA_INDEXES = {
     VCN.TABLE: {'idx_currency_alerts_delivery'},
 }
 
-
 def _v90_port_ident(x):
     s=str(x)
     if not s or any((not (c.isalnum() or c=='_')) for c in s):
         raise ValueError('invalid SQL identifier')
     return '"' + s + '"'
-
 
 def _v90_copy_portfolio_table(c, table, name_column):
     src=c.execute("SELECT to_regclass(%s) AS r",(f'public.{table}',)).fetchone()
@@ -129,7 +124,6 @@ def _v90_copy_portfolio_table(c, table, name_column):
     cur=c.execute(sql,(list(V90_PORTFOLIOS),))
     try: return max(0,int(cur.rowcount))
     except Exception: return 0
-
 
 def _v90_migrate_portfolio_data(c):
     c.execute("""CREATE TABLE IF NOT EXISTS v90_migration_state(
@@ -187,7 +181,6 @@ def ensure_schema(pg_connect):
                    json.dumps(POLICIES['Currency']),VERSION,VCP.PORTFOLIO_KEY,
                    VCP.PORTFOLIO_KEY,VCP.PORTFOLIO_KEY,VCP.PORTFOLIO_KEY))
 
-
 def _create_portfolio_schema(c):
         c.execute('''
         CREATE TABLE IF NOT EXISTS paper_portfolios(
@@ -242,7 +235,6 @@ def _create_portfolio_schema(c):
         VCN.ensure_schema(c)
         _v90_migrate_portfolio_data(c)
 
-
 def _fetch_usdrub():
     # Official CBR daily USD/RUB; reporting only, not a trading input.
     try:
@@ -256,7 +248,6 @@ def _fetch_usdrub():
     except Exception: pass
     return None,'UNAVAILABLE'
 
-
 def _fetch_ruonia():
     # Official Bank of Russia RUONIA page. Best-effort; benchmark freezes if unavailable.
     try:
@@ -269,7 +260,6 @@ def _fetch_ruonia():
             if 0<x<50: return x,'CBR_RUONIA'
     except Exception: pass
     return None,'UNAVAILABLE'
-
 
 def _signal_probability(row):
     cp=row.get('calibrated_probability')
@@ -294,7 +284,6 @@ def _signal_probability(row):
     if str(inst.get('investor_signal') or '').startswith('ADD'): p+=0.04
     return _clip(p,0.50,0.90),'MODEL_PRIOR_UNCALIBRATED'
 
-
 def _best_by_asset(summary):
     out={}
     for r in summary or []:
@@ -317,7 +306,6 @@ def _best_by_asset(summary):
         a=str(r.get('asset'))
         if a not in out or score>out[a]['_rank']: out[a]=x
     return out
-
 
 def _best_impulse_by_asset(summary):
     """Independent candidate book: only short/medium impulse trades.
@@ -393,8 +381,6 @@ def _best_impulse_by_asset(summary):
             out[a]=r
     return out
 
-
-
 def _ti(row):
     return ((row or {}).get('trade_plan') or {}).get('trade_integrity') or {}
 
@@ -440,8 +426,6 @@ def _soft_failure_state(c,name,z,row,target,current_frac):
         pl['last_soft_invalidation_reason']=None
         _write_position_payload(c,name,z['asset'],pl)
     return {'hard':False,'confirmed_soft':False,'count':0,'reason':'HEALTHY'}
-
-
 
 def _signal_first_admission(row, policy, drawdown):
     """Signal-first portfolio admission.
@@ -588,7 +572,6 @@ def _candidate_book_signal_first(summary):
             out[a]=r
     return out
 
-
 def _v90_setup_identity_bucket(row):
     row=row or {}
     h=str(row.get('horizon') or '1h')
@@ -603,7 +586,6 @@ def _v90_setup_identity_bucket(row):
     except Exception:
         bucket=0
     return f'{h}:{bucket}'
-
 
 def _portfolio_canonical_setup_id(row):
     """Stable market-setup identity used by re-entry guards and learning.
@@ -651,7 +633,6 @@ def _portfolio_canonical_setup_id(row):
 
 def _portfolio_admission_trace(candidates,policy,drawdown):
     return VAT.build(candidates, _portfolio_canonical_setup_id)
-
 
 def _candidate_book_v84(summary):
     # Unified multi-timeframe portfolio routing with experience-aware ranking.
@@ -704,15 +685,12 @@ def _candidate_book_v84(summary):
         out[asset]=best
     return out
 
-
 # =========================
 # VERITAS v84.2 PORTFOLIO AUDITED OVERRIDES
 # =========================
 
-
 # VERITAS V90.1 MOVEMENT CAPTURE
 _v901_legacy_impulse_book = _best_impulse_by_asset
-
 
 def _v901_no_hard_veto(row):
     plan=(row or {}).get('trade_plan') or {}
@@ -728,7 +706,6 @@ def _v901_no_hard_veto(row):
         and (plan.get('reentry_intelligence') or {}).get('allowed',True) is not False
     )
 
-
 def _v901_break_pass(row,direction):
     inst=(row or {}).get('institutional_signal') or {}
     bq=inst.get('breakout_quality') or {}
@@ -740,7 +717,6 @@ def _v901_break_pass(row,direction):
     if px<=0 or level<=0:
         return False
     return px>=level if direction=='LONG' else px<=level
-
 
 def _v901_structural_prebreak(summary):
     out={}
@@ -828,7 +804,6 @@ def _v901_structural_prebreak(summary):
             out[asset]=x
     return out
 
-
 def _best_impulse_by_asset(summary):
     out=dict(_v901_legacy_impulse_book(summary) or {})
     core=_candidate_book_v84(summary)
@@ -869,13 +844,8 @@ def _best_impulse_by_asset(summary):
             out[asset]=row
     return out
 
-
-
-
-
 # VERITAS V90.2 EXECUTION SELECTION
 _v902_previous_candidate_book = _candidate_book_v84
-
 
 def _v902_impulse_evidence(row, direction):
     row=row or {}
@@ -896,7 +866,6 @@ def _v902_impulse_evidence(row, direction):
         or (bdir==direction and bstate in ('EARLY_BREAKOUT','CONFIRMED_BREAKOUT','HIGH_QUALITY_BREAKOUT'))
         or (phase in ('EARLY_TREND','TREND','ESTABLISHED_TREND') and bdir==direction)
     )
-
 
 def _v902_execution_metrics(row, direction):
     row=row or {}
@@ -928,7 +897,6 @@ def _v902_execution_metrics(row, direction):
            +(0.025 if bool(plan.get('eligible')) else 0.0)
            -(0.06 if soft_wait and not impulse else 0.0))
     return score,float(p),source,rr,impulse
-
 
 def _candidate_book_v84(summary):
     # Direction comes from the whole timeframe grid; execution comes from the
@@ -1002,7 +970,6 @@ def _candidate_book_v84(summary):
             base['_v902_soft_override']=False
             out[asset]=base
     return out
-
 
 def _signal_first_admission(row,policy,drawdown):
     if not row:
@@ -1150,7 +1117,6 @@ def _signal_first_admission(row,policy,drawdown):
         'strong_aggressive':strong_aggressive,
         'sizing_authority':'V902_DIRECTION_GRID_THEN_EXECUTION_HORIZON_THEN_RISK'
     }
-
 
 # VERITAS 90 AGGRESSIVE EARLY-SETUP ROUTING
 
@@ -1404,8 +1370,6 @@ def _signal_first_admission(row,policy,drawdown):
             'planned_fraction':planned,'risk_governor':rg,
             'sizing_authority':'DECISION_TARGET_THEN_PORTFOLIO_RISK'}
 
-
-
 def _risk_governor(drawdown):
     d=max(0.0,float(drawdown))
     if d>=0.22: return {'state':'HARD_STOP','max_gross':0.25,'new_risk':False,'multiplier':0.0}
@@ -1414,7 +1378,6 @@ def _risk_governor(drawdown):
     if d>=0.14: return {'state':'CAUTION','max_gross':1.50,'new_risk':True,'multiplier':0.75}
     if d>=0.10: return {'state':'CAUTION','max_gross':1.75,'new_risk':True,'multiplier':0.90}
     return {'state':'NORMAL','max_gross':2.00,'new_risk':True,'multiplier':1.0}
-
 
 def _desired_fraction_r39(row,policy,drawdown):
     sf=_signal_first_admission(row,policy,drawdown)
@@ -1505,8 +1468,6 @@ def _legacy_desired_fraction_unused(row,policy,drawdown):
         elif state=='BREAKOUT_ADD': f=min(max(f,0.20),0.30)
     rg=_risk_governor(drawdown); f*=rg['multiplier']; return _clip(_round_step(f),0,2.0)
 
-
-
 # VERITAS V90 STRUCTURE LIFECYCLE EXIT
 
 def _v90_structure_exit_signal(row,z):
@@ -1523,10 +1484,8 @@ def _v90_structure_exit_signal(row,z):
         and str(s.get('state') or '')=='EXIT_REVERSAL'
     )
 
-
 # VERITAS 9.0 FINAL AGGRESSIVE EXECUTION SIZING
 _v90_execution_base_signal_admission=_signal_first_admission
-
 
 def _v90_aggressive_strong_context(row):
     if not row or not _v901_no_hard_veto(row):
@@ -1548,7 +1507,6 @@ def _v90_aggressive_strong_context(row):
     return bool(alignment>=4 and support_ratio>=1.50 and p>=0.82 and rr>=1.00
                 and (alignment>=5 or signal_tier in ('SUPER_LONG','SUPER_SHORT')))
 
-
 def _v90_aggressive_strong_fraction(row,policy,drawdown):
     if not _v90_aggressive_strong_context(row):
         return None
@@ -1568,7 +1526,6 @@ def _v90_aggressive_strong_fraction(row,policy,drawdown):
         pass
     f*=float(rg.get('multiplier') or 0.0)
     return _clip(_round_step(f),0,float((policy or {}).get('max_fraction') or 5.0))
-
 
 def _signal_first_admission(row,policy,drawdown):
     result=_v90_execution_base_signal_admission(row,policy,drawdown)
@@ -1596,11 +1553,8 @@ def _signal_first_admission(row,policy,drawdown):
                        'strong_aggressive':True})
     return result
 
-
-
 # VERITAS V90 CALIBRATED PROBABILITY SEMANTICS
 _v90q_previous_signal_first_admission = _signal_first_admission
-
 
 def _signal_probability(row):
     cp=(row or {}).get('calibrated_probability')
@@ -1635,7 +1589,6 @@ def _signal_probability(row):
         score+=0.04
     return _clip(score,0.0,1.0),'MODEL_QUALITY_SCORE_UNCALIBRATED'
 
-
 def _v90_aggressive_strong_context(row):
     if not row or not _v901_no_hard_veto(row):
         return False
@@ -1664,7 +1617,6 @@ def _v90_aggressive_strong_context(row):
     return bool(alignment>=4 and support_ratio>=1.50 and float(score)>=0.82 and rr>=1.20
                 and hscore>=0.68
                 and (alignment>=5 or signal_tier in ('SUPER_LONG','SUPER_SHORT')))
-
 
 def _signal_first_admission(row,policy,drawdown):
     result=dict(_v90q_previous_signal_first_admission(row,policy,drawdown) or {})
@@ -1732,11 +1684,9 @@ def _signal_first_admission(row,policy,drawdown):
             'risk_governor':rg,'strong_aggressive':False,
             'sizing_authority':'UNCALIBRATED_SCORE_CAPPED_PAPER_SIZING'}
 
-
 # VERITAS V90 FAST IMPULSE LEVERAGE
 _v90fi_base_signal_first_admission = _signal_first_admission
 _v90fi_base_aggressive_candidate_book = _v90_aggressive_candidate_book
-
 
 def _v90_fast_structure_candidate(rows):
     best=None
@@ -1823,7 +1773,6 @@ def _v90_fast_structure_candidate(rows):
             best=x
     return best
 
-
 def _v90_aggressive_candidate_book(summary, core_candidates):
     out=dict(_v90fi_base_aggressive_candidate_book(summary,core_candidates) or {})
     rows_by_asset={}
@@ -1838,7 +1787,6 @@ def _v90_aggressive_candidate_book(summary, core_candidates):
         if candidate is not None:
             out[asset]=candidate
     return out
-
 
 def _v90_fast_impulse_context(row):
     row=row or {}
@@ -1901,7 +1849,6 @@ def _v90_fast_impulse_context(row):
         and 0.0<stop_risk<=0.025
     )
 
-
 def _v90_fast_impulse_fraction(row,policy,drawdown):
     if not _v90_fast_impulse_context(row):
         return None
@@ -1951,7 +1898,6 @@ def _v90_fast_impulse_fraction(row,policy,drawdown):
     f*=float(rg.get('multiplier') or 0.0)
     return _clip(_round_step(f),0,maxf)
 
-
 def _signal_first_admission(row,policy,drawdown):
     result=dict(_v90fi_base_signal_first_admission(row,policy,drawdown) or {})
     if str((policy or {}).get('mode') or '')!='AGGRESSIVE' or not row:
@@ -1986,8 +1932,6 @@ def _signal_first_admission(row,policy,drawdown):
         'sizing_authority':'V90_FAST_IMPULSE_THEN_STOP_RISK_AND_GROSS_CAP'
     })
     return result
-
-
 
 # VERITAS V90 QUALITY GATE R2
 _v90q2_base_signal_first_admission = _signal_first_admission
@@ -2115,7 +2059,6 @@ def _portfolio_rows(c,name,*,mark_only=False):
     pos=c.execute((VBM.MARK_SQL if mark_only else 'SELECT * FROM paper_positions')+' WHERE portfolio_name=%s',(name,)).fetchall()
     return p,pos
 
-
 def _mark_nav(p,pos,prices):
     unreal=0.0; gross=0.0; net=0.0
     for z in pos:
@@ -2128,7 +2071,6 @@ def _mark_nav(p,pos,prices):
         px=VPG.position_mark_price(dict(z)); notional=abs(float(z['units'])*px)
         gross+=notional/max(nav,1.0); net+=(notional/max(nav,1.0))*(1 if z['direction']=='LONG' else -1)
     return nav,unreal,gross,net
-
 
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     # Final accounting boundary: no unlabelled scalar can close a position.
@@ -2238,7 +2180,6 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
                   (remain,price,target_fraction,ts,json.dumps(exit_patch,default=str),name,z['asset']))
     VCN.enqueue_order(c,name,z['asset'],cid)
     return fee
-
 
 def _record_entry_outcome(row,status,reason,**details):
     # Nested audit survives the shallow copies used by execution layers.
@@ -2377,7 +2318,6 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
     _record_entry_outcome(row,'EXECUTED','ORDER_RECORDED',fill_price=fill_price,order_id=intent.client_order_id,
                           execution_action='ADD' if z else 'OPEN')
 
-
 def _apply_funding(c,p,pos,prices,ruonia,ts):
     # R82: fixed 16%, free first 24h, identical for LONG and SHORT.
     # Portfolio last_mark_at is the transactional accrual cursor; no back-charge.
@@ -2392,13 +2332,11 @@ def _apply_funding(c,p,pos,prices,ruonia,ts):
     if cost: c.execute('UPDATE paper_portfolios SET funding_rub=funding_rub+%s WHERE name=%s',(cost,p['name']))
     return cost
 
-
 def _stats(c,name):
     r=c.execute('''SELECT count(*) n, count(*) FILTER(WHERE profitable) wins, count(*) FILTER(WHERE meaningful_win) mw,
                           COALESCE(sum(net_pnl_rub),0) pnl, COALESCE(avg(net_pnl_rub),0) avg_pnl, ''' + CLOSED_METRICS_SQL + '''
                    FROM paper_trades WHERE portfolio_name=%s AND status='CLOSED' ''',(name,)).fetchone()
     n=int(r['n'] or 0); return {'closed_trades':n,'wins':int(r['wins'] or 0),'meaningful_wins':int(r['mw'] or 0),'win_rate':(float(r['wins'])/n if n else None),'meaningful_win_rate':(float(r['mw'])/n if n else None),'closed_trade_pnl_rub':float(r['pnl'] or 0),'avg_closed_trade_pnl_rub':float(r['avg_pnl'] or 0),**closed_trade_metrics(r,n)}
-
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     # Kept in the call signature for historical callers; CTC owns the rate.
@@ -2606,7 +2544,6 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     return {'name':name,'nav_rub':round(nav,2),'nav_usd':round(nav_usd,2) if nav_usd else None,'initial_nav_rub':round(float(p['initial_nav_rub']),2),'total_return_pct':round(100*(nav/max(float(p['initial_nav_rub']),1.0)-1),4),'benchmark_nav_rub':round(bench,2),'excess_vs_ruonia_pct':round(100*(nav/bench-1),4),'drawdown_pct':round(100*dd,4),'gross_leverage':round(gross,4),'net_exposure':round(net,4),'cash_equivalent_fraction':round(max(0,1-gross),4),'risk_governor':rg,'ruonia':ruonia,'usdrub':usdrub,
             'admission_trace':trace,**st}
 
-
 def _portfolio_cycle_book(summary,candidates,impulse_candidates,mode):
     if mode=='IMPULSE_ONLY':
         base_book=impulse_candidates
@@ -2617,7 +2554,6 @@ def _portfolio_cycle_book(summary,candidates,impulse_candidates,mode):
     else:
         base_book=candidates
     return _v90_trend_transition_candidate_book(summary,base_book,mode)
-
 
 def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=COMMISSION,emit=None):
     from veritas_portfolio_cycle import run_books, emit_diagnostic
@@ -2647,7 +2583,6 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
                            unified_execution=True,experience_weighted=True,adaptive_regime=True,v84_execution=True,v842_audited=True,profit_harvest_v843=True)
     return out
 
-
 def report(pg_connect):
     ensure_schema(pg_connect); out=[]
     with pg_connect() as c:
@@ -2662,13 +2597,11 @@ def report(pg_connect):
             out.append({'name':name,'created_at':p['created_at'].isoformat() if p else None,'latest':_jsonable(dict(h)) if h else None,'positions':enriched,**st})
     return _jsonable({'status':'OK','version':VERSION,'portfolios':out,'initial_nav_rub':INITIAL_NAV_RUB,'commission_rate':COMMISSION,'max_gross':MAX_GROSS,'max_stop_risk_nav':MAX_STOP_RISK_NAV,'position_step':POSITION_STEP,'live_capital':False})
 
-
 def trade_report(pg_connect,limit=100):
     ensure_schema(pg_connect)
     with pg_connect() as c:
         rows=c.execute('SELECT * FROM paper_trades ORDER BY opened_at DESC LIMIT %s',(int(limit),)).fetchall()
     return _jsonable({'status':'OK','trades':[dict(x) for x in rows]})
-
 
     def _v90_trade_report_full(pg_connect,limit=1000):
         ensure_schema(pg_connect)
@@ -2748,7 +2681,6 @@ _v90j_base_close_or_reduce = _close_or_reduce
 _v90j_base_step_one = _step_one
 _v90j_cache={'at':0.0,'value':None}
 
-
 def _v90j_json(x):
     if isinstance(x,dict):
         return dict(x)
@@ -2759,7 +2691,6 @@ def _v90j_json(x):
     except Exception:
         return {}
 
-
 def _v90j_float(x,default=None):
     try:
         if x is None:
@@ -2769,12 +2700,10 @@ def _v90j_float(x,default=None):
     except Exception:
         return default
 
-
 def _v90j_iso(x):
     if x is None:
         return None
     return x.isoformat() if hasattr(x,'isoformat') else str(x)
-
 
 def _v90j_msk_date(x):
     if x is None:
@@ -2787,7 +2716,6 @@ def _v90j_msk_date(x):
         return x.astimezone(timezone(timedelta(hours=3))).date()
     except Exception:
         return None
-
 
 def _v90j_episode_key(z,payload):
     key=(payload.get('canonical_setup_id') or payload.get('setup_id')
@@ -2806,7 +2734,6 @@ def _v90j_episode_key(z,payload):
     return '|'.join(str(v or '—') for v in
                     (z.get('asset'),z.get('direction'),z.get('horizon'),z.get('setup'),bucket))
 
-
 def _v90j_learning_label(net,price_return,mfe,mae,giveback,exit_reason,recovered=False):
     # This compatibility helper has no immutable rule/path proof. It can name
     # the financial outcome, but cannot certify good execution or a wrong stop.
@@ -2817,7 +2744,6 @@ def _v90j_learning_label(net,price_return,mfe,mae,giveback,exit_reason,recovered
         return 'UNVERIFIED_TRADE_EVIDENCE'
     return ('PROFIT_OBSERVED_RULES_UNVERIFIED' if net>0 else
             'LOSS_OBSERVED_RULES_UNVERIFIED' if net<0 else 'FLAT_OBSERVED_RULES_UNVERIFIED')
-
 
 def _v90j_learning_conclusion(label,z):
     if label in ('UNVERIFIED_TRADE_EVIDENCE','PROFIT_OBSERVED_RULES_UNVERIFIED',
@@ -2845,7 +2771,6 @@ def _v90j_learning_conclusion(label,z):
     if label=='RECOVERED_HISTORICAL_NO_LEARNING':
         return 'Историческая запись восстановлена частично; результат хранится, но неполная телеметрия не усиливает правила модели.'
     return f'{setup} / {regime}: смешанный результат; использовать только как слабое execution-evidence до накопления выборки.'
-
 
 def _v90j_entry_patch(row,z,ts):
     row=row or {}; plan=row.get('trade_plan') or {}; inst=row.get('institutional_signal') or {}
@@ -2886,7 +2811,6 @@ def _v90j_entry_patch(row,z,ts):
         'mae_pct':0.0,
     }
 
-
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     result=_v90j_base_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason)
     try:
@@ -2920,7 +2844,6 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         pass
     _v90j_cache['at']=0.0
     return result
-
 
 _v90j_excursion_cycle = threading.local()
 
@@ -2997,7 +2920,6 @@ def _v90j_mark_open_positions(c,name,prices,ts,positions=None):
                                   quote_for_position=VPG.quote_for_position,
                                   decode_payload=_v90j_json,iso=_v90j_iso)
 
-
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     _baton=_v90_book_baton_take(c,name,ts)
     marked=_v90j_mark_open_positions(
@@ -3006,7 +2928,6 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         _v90_book_baton_clear()
     _v90j_update_excursions(c,name,prices,ts)
     return _v90j_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
-
 
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     tid=(z or {}).get('active_trade_id')
@@ -3069,7 +2990,6 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
 # Stable accounting-only boundary captured before later Rxx strategy layers.
 CANONICAL_ACCOUNTING_OPEN_OR_ADD=_open_or_add
 CANONICAL_ACCOUNTING_CLOSE_OR_REDUCE=_close_or_reduce
-
 
 def _v90j_load_closed(pg_connect,limit=2500):
     limit=max(50,min(5000,int(limit or 2500)))
@@ -3221,7 +3141,6 @@ def _v90j_load_closed(pg_connect,limit=2500):
         out.append(_jsonable(z))
     return out
 
-
 def _v90j_unique_learning(rows):
     g={}; members={}
     for t in rows or []:
@@ -3273,10 +3192,8 @@ def _v90j_unique_learning(rows):
     out.sort(key=lambda x:str(x.get('last_closed_at') or ''),reverse=True)
     return out
 
-
 def learning_archive(pg_connect,limit=2500):
     return _v90j_unique_learning(_v90j_load_closed(pg_connect,limit))
-
 
 def _v90j_closed_marker(pg_connect):
     try:
@@ -3288,7 +3205,6 @@ def _v90j_closed_marker(pg_connect):
         return (int((r or {}).get('n') or 0),str((r or {}).get('last_closed') or ''))
     except Exception:
         return None
-
 
 def trade_report(pg_connect,limit=2500):
     now_ts=time.time()
@@ -3360,11 +3276,9 @@ def trade_report(pg_connect,limit=2500):
     _v90j_cache['at']=now_ts; _v90j_cache['marker']=marker; _v90j_cache['value']=result
     return result
 
-
 # VERITAS V90 OPEN POSITION REPORT V2
 _v90p_base_report = report
 _v90p_audit_signature = None
-
 
 def _v90p_json(x):
     if isinstance(x,dict):
@@ -3376,7 +3290,6 @@ def _v90p_json(x):
     except Exception:
         return {}
 
-
 def _v90p_float(x,default=None):
     try:
         if x is None:
@@ -3385,7 +3298,6 @@ def _v90p_float(x,default=None):
         return v if math.isfinite(v) else default
     except Exception:
         return default
-
 
 def _v90p_dt(x):
     if x is None:
@@ -3397,7 +3309,6 @@ def _v90p_dt(x):
         return z if z.tzinfo else z.replace(tzinfo=timezone.utc)
     except Exception:
         return None
-
 
 def _v90p_take_price(z,payload,trade_payload,decision_payload):
     plan=(decision_payload.get('trade_plan') or {}) if isinstance(decision_payload,dict) else {}
@@ -3431,7 +3342,6 @@ def _v90p_take_price(z,payload,trade_payload,decision_payload):
         return tp,'EXPECTED_MOVE'
     return None,None
 
-
 def _v90p_entry_metric(payload,trade_payload,decision_payload):
     source=(payload.get('pwin_source') or payload.get('probability_source')
             or trade_payload.get('pwin_source') or trade_payload.get('probability_source'))
@@ -3463,7 +3373,6 @@ def _v90p_entry_metric(payload,trade_payload,decision_payload):
         if v is not None:
             return v,'SIGNAL_STRENGTH','SIGNAL_STRENGTH'
     return None,None,'BUILDING'
-
 
 def _v90_open_position_report(pg_connect):
     global _v90p_audit_signature
@@ -3584,15 +3493,12 @@ def _v90_open_position_report(pg_connect):
                                      'mark_to_market':'EVERY_PORTFOLIO_CYCLE_PLUS_LATEST_DECISION_FAILSAFE'}
     return _jsonable(d)
 
-
 report=_v90_open_position_report
-
 
 # VERITAS V90 R2 PERFORMANCE SEGMENT + LOSS AUDIT
 V90_Q2_STARTED_AT='2026-09-26T07:13:08+00:00'
 V90_R41_STARTED_AT=os.getenv('VERITAS_R41_STARTED_AT','2026-09-28T09:13:00+00:00')
 _v90q2_base_trade_report=trade_report
-
 
 def worst_trade_audit(pg_connect,limit=30):
     rows=_v90j_load_closed(pg_connect,max(200,min(2500,int(limit or 30)*10)))
@@ -3637,13 +3543,11 @@ def worst_trade_audit(pg_connect,limit=30):
                      ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return result
 
-
 def quality_loss_audit(pg_connect):
     from veritas_trade_audit import audit_closed_trades
     with pg_connect() as c:
         result=audit_closed_trades(c)
     return _jsonable(result)
-
 
 def _v90q2_trade_report(pg_connect,limit=2500):
     d=dict(_v90q2_base_trade_report(pg_connect,limit) or {})
@@ -3672,7 +3576,6 @@ def _v90q2_trade_report(pg_connect,limit=2500):
     return _jsonable(d)
 
 trade_report=_v90q2_trade_report
-
 
 # VERITAS V90 LOSS-DRIVEN GUARDS
 _v90ld_base_admission=_signal_first_admission
@@ -3822,7 +3725,6 @@ def _v90ld_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     return out
 
 _close_or_reduce=_v90ld_close_or_reduce
-
 
 # VERITAS V90 PRICE PATH INTEGRITY R3
 _v90pi_base_entry_patch=_v90j_entry_patch
@@ -4084,7 +3986,6 @@ def trade_report(pg_connect,limit=2500):
         pass
     return _jsonable(d)
 
-
 # VERITAS V90 STRUCTURAL TRAILING R4
 _v90tr_base_step_one=_step_one
 
@@ -4267,7 +4168,6 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         _v90_book_baton_clear()
     return _v90tr_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
 
-
 # VERITAS V90 CONTRACT IDENTITY R5
 _v90ci_base_step_one=_step_one
 _v90ci_base_entry_patch=_v90j_entry_patch
@@ -4409,7 +4309,6 @@ def _v90ci_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_
 
 _step_one=_v90ci_step_one
 
-
 # VERITAS V90 RANGE LOW VOL BREAKOUT GUARD R6
 _v90rlv_base_admission=_signal_first_admission
 
@@ -4461,7 +4360,6 @@ def _v90rlv_admission(row,policy,drawdown):
     return base
 
 _signal_first_admission=_v90rlv_admission
-
 
 # VERITAS V90 DYNAMIC PROFIT HARVEST R7
 _v90ph_base_step_one=_step_one
@@ -4599,7 +4497,6 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         _v90_book_baton_clear()
     return _v90ph_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
 
-
 # VERITAS V90 PROFIT RELOAD R8
 _v90pr_base_open_or_add=_open_or_add
 
@@ -4700,7 +4597,6 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
                              ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return result
 
-
 # VERITAS V90 MICRO FLIP GUARD R9
 _v90mf_base_close_or_reduce=_close_or_reduce
 
@@ -4736,7 +4632,6 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
             pass
     return _v90mf_base_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason)
 
-
 # VERITAS V90 HORIZON CONSISTENT EXIT R10
 _v90hx_base_close_or_reduce=_close_or_reduce
 
@@ -4767,7 +4662,6 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     except Exception:
         pass
     return _v90hx_base_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason)
-
 
 # VERITAS V90 SETUP GRADE R11
 _v90sg_base_admission=_signal_first_admission
@@ -4935,7 +4829,6 @@ def _v90j_entry_patch(row,z,ts):
     d['setup_grade_reasons']=(row or {}).get('_setup_grade_reasons')
     return d
 
-
 # VERITAS V90 RECENT SWING TRAILING R12
 _v90rst_base_extract_levels=_v90tr_extract_levels
 
@@ -4985,7 +4878,6 @@ _v90rst_base_step_one=_step_one
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     out=_v90rst_base_step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary)
     return out
-
 
 # VERITAS V90 TREND TRANSITION ENGINE R13
 
@@ -5092,7 +4984,6 @@ def _v90tte_detect(row):
       'rr':rr,'expected_move_pct':exp
     }
 
-
 def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
     out={k:dict(v) for k,v in (core_candidates or {}).items()}
     by_asset={}
@@ -5150,7 +5041,6 @@ def _v90_trend_transition_candidate_book(summary,core_candidates,mode=None):
             existing['_trend_transition_priority']=True
             out[asset]=existing
     return out
-
 
 _v90tte_base_admission=_signal_first_admission
 
@@ -5242,7 +5132,6 @@ def _signal_first_admission(row,policy,drawdown):
     base['quality_first_dna']=True
     return base
 
-
 _v90tte_base_entry_patch=_v90j_entry_patch
 
 def _v90j_entry_patch(row,z,ts):
@@ -5254,7 +5143,6 @@ def _v90j_entry_patch(row,z,ts):
         d['trend_transition_score']=t.get('score')
         d['trend_transition_evidence']=t
     return d
-
 
 # VERITAS V90 INTELLIGENCE INDEX R14
 V90_EXPERT_PRINCIPLES_COUNT=51
@@ -5395,7 +5283,6 @@ def _v90_intelligence_index(c):
       'rule':'Score can rise from more knowledge only modestly; durable improvement requires new clean outcomes, better net expectancy, better capture, and better telemetry coverage.'
     }
 
-
 _v90ii_base_report=report
 
 def report(pg_connect):
@@ -5406,7 +5293,6 @@ def report(pg_connect):
     except Exception as e:
         d['intelligence_index']={'status':'UNAVAILABLE','error':str(e)[:180]}
     return _jsonable(d)
-
 
 # VERITAS V90 PROFITABILITY STABILIZATION R16
 # Product objective: positive post-cost expectancy and movement capture.
@@ -5501,7 +5387,6 @@ def _signal_first_admission(row,policy,drawdown):
 # VERITAS 90 FINAL RUNTIME IDENTITY
 VERSION=VR.PORTFOLIO_VERSION
 
-
 # VERITAS V90 RISK-NEUTRAL PYRAMIDING R17
 # Objective: increase movement capture without increasing the initial money-at-risk.
 # Aggressive keeps a 5x gross ceiling, but leverage must be earned by protected profit
@@ -5543,7 +5428,6 @@ def _v90r17_exact_structural_stop(row,direction,current):
     if direction=='SHORT' and not (stop>current):
         return None,None,None
     return float(stop),tf,float(lvl)
-
 
 def _v90tr_apply(c,name,candidates,prices,ts,positions=None):
     """R17 structural trailing.
@@ -5641,7 +5525,6 @@ def _v90tr_apply(c,name,candidates,prices,ts,positions=None):
                          ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return changes
 
-
 _v90r17_base_open_or_add=_open_or_add
 
 def _v90r17_risk_budget(z,nav):
@@ -5664,7 +5547,6 @@ def _v90r17_risk_budget(z,nav):
     except Exception:
         pass
     return float(nav)*float(MAX_STOP_RISK_NAV)
-
 
 def _v90r17_cap_add_to_risk(z,price,target_fraction,nav):
     """Cap an add so P/L at the current structural stop cannot lose more than
@@ -5711,7 +5593,6 @@ def _v90r17_cap_add_to_risk(z,price,target_fraction,nav):
       'risk_neutral_cap_fraction':cap_fraction,
       'capped_fraction':capped,
     }
-
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     row2=dict(row or {})
@@ -5790,7 +5671,6 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         pass
     return result
 
-
 _v90r17_base_close_or_reduce=_close_or_reduce
 
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
@@ -5829,7 +5709,6 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
 
     return _v90r17_base_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason)
 
-
 _v90r17_base_report=report
 
 def report(pg_connect):
@@ -5848,9 +5727,7 @@ def report(pg_connect):
     d['portfolio_max_gross']=_limits
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),15)
-
 
 # VERITAS V90 CLOSED TRADE DIAGNOSTIC R18
 # Read-only telemetry: emit only when the latest closed-trade marker changes.
@@ -5939,7 +5816,6 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
         pass
     return out
 
-
 # VERITAS V90 ANTI-CHURN QUALITY CONTROL R19
 # Purpose:
 # - reject 5m moves that are too small after costs;
@@ -5961,7 +5837,6 @@ _v90r19_base_step_one=_step_one
 _v90r19_base_report=report
 _v90r19_confirm_state={}
 
-
 def _v90r19_token(row):
     row=row or {}
     for key in ('observed_at','generated_at','as_of','timestamp','at','decision_at'):
@@ -5976,7 +5851,6 @@ def _v90r19_token(row):
       hs.get('score'),hs.get('state'),
     ]
     return '|'.join(str(x) for x in parts)
-
 
 def _v90r19_stable_confirmation(row):
     row=row or {}
@@ -5993,7 +5867,6 @@ def _v90r19_stable_confirmation(row):
         _v90r19_confirm_state[key]=st
     return count
 
-
 def _v90r19_row_direction(row):
     if not row:
         return 'NO_TRADE'
@@ -6001,13 +5874,11 @@ def _v90r19_row_direction(row):
                ((row.get('horizon_structure') or {}).get('direction')) or
                row.get('horizon_structure_direction') or 'NO_TRADE')
 
-
 def _v90r19_row_hstate(row):
     if not row:
         return ''
     return str(row.get('horizon_structure_state') or
                ((row.get('horizon_structure') or {}).get('state')) or '')
-
 
 def _v90r19_row_hscore(row):
     if not row:
@@ -6018,10 +5889,8 @@ def _v90r19_row_hscore(row):
     except Exception:
         return 0.0
 
-
 def _v90r19_asset_rows(summary,asset):
     return [r for r in (summary or []) if str((r or {}).get('asset') or '')==str(asset)]
-
 
 def _v90r19_exact_tf(summary,asset,tf):
     rows=[r for r in _v90r19_asset_rows(summary,asset)
@@ -6029,7 +5898,6 @@ def _v90r19_exact_tf(summary,asset,tf):
     if not rows:
         return None
     return max(rows,key=lambda r:float((r or {}).get('confidence') or 0.0))
-
 
 def _v90r19_strong_opposite_higher_tf(summary,row):
     row=row or {}
@@ -6067,7 +5935,6 @@ def _v90r19_strong_opposite_higher_tf(summary,row):
                     'structure_score':hscore,'state':hstate}
     return None
 
-
 def _v90r19_valid_1h_support(summary,row):
     row=row or {}
     direction=str(row.get('research_decision') or 'NO_TRADE')
@@ -6084,7 +5951,6 @@ def _v90r19_valid_1h_support(summary,row):
     hscore=_v90r19_row_hscore(r)
     same=bool(rd==direction or (hsdir==direction and hscore>=0.55))
     return same,('1H_CONFIRMED' if same else '1H_NOT_ALIGNED')
-
 
 def _v90r19_prepare_candidate(summary,row,mode):
     x=dict(row or {})
@@ -6109,7 +5975,6 @@ def _v90r19_prepare_candidate(summary,row,mode):
         # but only as a 5% probe until 1h confirms.
         x['_r19_probe_cap']=V90_R19_GRADE_B_AGGRESSIVE_PROBE
     return x
-
 
 def _v90r19_opposite_confirmation(row,new_direction):
     row=row or {}
@@ -6136,10 +6001,8 @@ def _v90r19_opposite_confirmation(row,new_direction):
         and indep>=3
     )
 
-
 def _v90r19_old_structure_broken(summary,z,now=None):
     return _v842_hard_thesis_exit(_v842_management_row(summary,z,now=now))
-
 
 def _v90r19_flip_confirmed(summary,z,row,now=None):
     if not z or not row:
@@ -6152,7 +6015,6 @@ def _v90r19_flip_confirmed(summary,z,row,now=None):
         _v90r19_old_structure_broken(summary,z,now=now)
         and _v90r19_opposite_confirmation(row,new_direction)
     )
-
 
 def _signal_first_admission(row,policy,drawdown):
     row=row or {}
@@ -6212,7 +6074,6 @@ def _signal_first_admission(row,policy,drawdown):
     base['open']=bool(float(base.get('fraction') or 0.0)>0)
     base['r19_anti_churn']=True
     return base
-
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     mode=str((policy or {}).get('mode') or 'CORE')
@@ -6288,7 +6149,6 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         c,name,policy,book,prices,ruonia,usdrub,ts,commission_rate,summary
     )
 
-
 def report(pg_connect):
     d=dict(_v90r19_base_report(pg_connect) or {})
     d['execution_policy_r19']={
@@ -6305,9 +6165,7 @@ def report(pg_connect):
     }
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),16)
-
 
 # VERITAS V90 SUPER SIGNAL EXECUTION ROUTER R20
 # Keeps research and execution semantics aligned:
@@ -6327,7 +6185,6 @@ V90_R20_SUPER_5M_MIN_MOVE=0.0045
 _v90r20_base_signal_first_admission=_signal_first_admission
 _v90r20_base_step_one=_step_one
 _v90r20_base_report=report
-
 
 def _v90r20_alignment(summary,asset,direction):
     supporting=[]
@@ -6370,7 +6227,6 @@ def _v90r20_alignment(summary,asset,direction):
             opposite_score += max(conf,hscore,0.10)
     ratio=same_score/max(0.01,opposite_score)
     return supporting,same_score,opposite_score,ratio
-
 
 def _v90r20_super_candidate(summary,asset):
     choices=[]
@@ -6458,7 +6314,6 @@ def _v90r20_super_candidate(summary,asset):
         return None
     return max(choices,key=lambda x:float(x.get('_execution_rank') or 0.0))
 
-
 def _v90r20_super_soft_override(base,row,policy,drawdown):
     mode=str((policy or {}).get('mode') or 'CORE')
     if mode=='CHALLENGER':
@@ -6521,7 +6376,6 @@ def _v90r20_super_soft_override(base,row,policy,drawdown):
       'sizing_authority':'R20_SUPER_THEN_STRUCTURAL_RISK'
     }
 
-
 def _signal_first_admission(row,policy,drawdown):
     base=dict(_v90r20_base_signal_first_admission(row,policy,drawdown) or {})
     if not (row or {}).get('_r20_super_priority'):
@@ -6548,7 +6402,6 @@ def _signal_first_admission(row,policy,drawdown):
         base['super_signal']=True
         return base
     return _v90r20_super_soft_override(base,row,policy,drawdown)
-
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     book={k:dict(v) for k,v in (candidates or {}).items()}
@@ -6586,7 +6439,6 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         c,name,policy,book,prices,ruonia,usdrub,ts,commission_rate,summary
     )
 
-
 def report(pg_connect):
     d=dict(_v90r20_base_report(pg_connect) or {})
     d['execution_policy_r20']={
@@ -6603,9 +6455,7 @@ def report(pg_connect):
     }
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),17)
-
 
 # VERITAS V90 SUPER EXECUTION COMPLETION R21
 # Fixes the last silent execution gap:
@@ -6616,7 +6466,6 @@ V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),17)
 _v90r21_base_open_or_add=_open_or_add
 _v90r21_base_step_one=_step_one
 _v90r21_base_report=report
-
 
 def _v90r21_execution_row(row):
     x=dict(row or {})
@@ -6633,7 +6482,6 @@ def _v90r21_execution_row(row):
         rs['r21_super_override']=True
         x['range_retest_breakout']=rs
     return x
-
 
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     before=c.execute(
@@ -6698,13 +6546,11 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return result
 
-
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     book={a:_v90r21_execution_row(r) for a,r in (candidates or {}).items()}
     return _v90r21_base_step_one(
         c,name,policy,book,prices,ruonia,usdrub,ts,commission_rate,summary
     )
-
 
 def report(pg_connect):
     d=dict(_v90r21_base_report(pg_connect) or {})
@@ -6716,9 +6562,7 @@ def report(pg_connect):
     }
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),18)
-
 
 # VERITAS V90 EXECUTION QUALITY R22
 # Closed-loop fixes derived from the latest post-R19/R21 episodes:
@@ -6742,14 +6586,12 @@ _v90r22_active_drawdown=0.0
 _v90r22_active_portfolio=None
 _v90r22_edge_caps={}
 
-
 def _v90r22_float(v):
     try:
         x=float(v)
         return x if math.isfinite(x) else None
     except Exception:
         return None
-
 
 def _v90r22_structural_candidates(row,direction,current):
     row=row or {}
@@ -6816,7 +6658,6 @@ def _v90r22_structural_candidates(row,direction,current):
         out.append((source,x))
     return horizon,out
 
-
 def _v90r17_exact_structural_stop(row,direction,current):
     # Start with the previous R17/R12 result.
     base_stop,base_tf,base_level=_v90r22_base_exact_structural_stop(
@@ -6851,7 +6692,6 @@ def _v90r17_exact_structural_stop(row,direction,current):
 
     return float(stop),str(tf),float(lvl)
 
-
 def _v90r22_full_admission_without_advancing_confirmation(row,policy,drawdown):
     # Admission must be evaluated without converting a single observation into
     # two confirmations merely because flip validation calls the gate twice.
@@ -6861,7 +6701,6 @@ def _v90r22_full_admission_without_advancing_confirmation(row,policy,drawdown):
     finally:
         _v90r19_confirm_state.clear()
         _v90r19_confirm_state.update(snapshot)
-
 
 def _v90r19_flip_confirmed(summary,z,row,now=None):
     structural=_v90r22_base_flip_confirmed(summary,z,row,now=now)
@@ -6889,7 +6728,6 @@ def _v90r19_flip_confirmed(summary,z,row,now=None):
           'requested_fraction':admission.get('fraction'),
         },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return allowed
-
 
 def _signal_first_admission(row,policy,drawdown):
     base=dict(_v90r22_base_admission(row,policy,drawdown) or {})
@@ -6932,7 +6770,6 @@ def _signal_first_admission(row,policy,drawdown):
     base['open']=bool(float(base.get('fraction') or 0.0)>0)
     return base
 
-
 def _v90r22_position_age_seconds(z,ts):
     try:
         op=z.get('opened_at')
@@ -6943,7 +6780,6 @@ def _v90r22_position_age_seconds(z,ts):
         return max(0.0,(now_dt-op_dt).total_seconds())
     except Exception:
         return 0.0
-
 
 def _v90r22_edge_decay_reduce(c,p,name,z,row,price,nav,ts,mode):
     z=dict(z or {})
@@ -7024,7 +6860,6 @@ def _v90r22_edge_decay_reduce(c,p,name,z,row,price,nav,ts,mode):
     },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return target
 
-
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     global _v90r22_active_policy,_v90r22_active_drawdown,_v90r22_active_portfolio
     book={a:dict(r) for a,r in (candidates or {}).items()}
@@ -7077,7 +6912,6 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         _v90r22_active_drawdown=0.0
         _v90r22_active_portfolio=None
 
-
 def report(pg_connect):
     d=dict(_v90r22_base_report(pg_connect) or {})
     d['execution_policy_r22']={
@@ -7093,9 +6927,7 @@ def report(pg_connect):
     }
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),19)
-
 
 # VERITAS V90 AGGRESSIVE PROFILE R24
 # Aggressive is intentionally distinct from Champion:
@@ -7111,7 +6943,6 @@ V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),19)
 _v90r24_base_admission=_signal_first_admission
 _v90r24_base_open_or_add=_open_or_add
 _v90r24_base_report=report
-
 
 def _v90r24_aggressive_quality(row):
     row=row or {}
@@ -7158,7 +6989,6 @@ def _v90r24_aggressive_quality(row):
       'super':is_super,'confirmed':confirmed,'fresh':fresh,
     }
 
-
 def _v90r24_stop_risk_cap(row):
     plan=(row or {}).get('trade_plan') or {}
     try:
@@ -7175,7 +7005,6 @@ def _v90r24_stop_risk_cap(row):
     if rp<=0:
         return None
     return float(MAX_STOP_RISK_NAV)/rp
-
 
 def _signal_first_admission(row,policy,drawdown):
     base=dict(_v90r24_base_admission(row,policy,drawdown) or {})
@@ -7228,7 +7057,6 @@ def _signal_first_admission(row,policy,drawdown):
     base['r24_structural_risk_cap_fraction']=risk_cap
     return base
 
-
 def _v90r24_protected_scale_target(z,row,price,nav,current_target):
     if not z:
         return current_target,None
@@ -7279,7 +7107,6 @@ def _v90r24_protected_scale_target(z,row,price,nav,current_target):
       'quality':q
     }
 
-
 def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reason):
     if str(name)!='Aggressive':
         return _v90r24_base_open_or_add(
@@ -7306,7 +7133,6 @@ def _open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,row,reaso
         'R24_AGGRESSIVE_SCALE' if desired>float(target_fraction)+0.001 else reason
     )
 
-
 def report(pg_connect):
     d=dict(_v90r24_base_report(pg_connect) or {})
     d['execution_policy_r24']={
@@ -7322,9 +7148,7 @@ def report(pg_connect):
     }
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),20)
-
 
 # VERITAS V90 OPEN POSITION LEARNING VIEW R25
 # Adds compact management + learning telemetry for the live UI.
@@ -7410,7 +7234,6 @@ def report(pg_connect):
 
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),21)
 
-
 # VERITAS V90 EPISODE ATTRIBUTION LEARNING R29
 # Closed-loop learning from completed independent episodes, not repeated snapshots.
 #
@@ -7432,7 +7255,6 @@ _v90r29_base_report=report
 
 _v90r29_cache={'at':0.0,'profiles':{},'summary':{}}
 
-
 def _v90r29_num(v,default=None):
     try:
         if v is None:
@@ -7441,7 +7263,6 @@ def _v90r29_num(v,default=None):
         return x if math.isfinite(x) else default
     except Exception:
         return default
-
 
 def _v90r29_ensure(c):
     c.execute("""
@@ -7486,7 +7307,6 @@ def _v90r29_ensure(c):
                  ON v90_learning_episodes((payload->>'independent_episode_key'))
                  WHERE learning_eligible=TRUE""")
 
-
 def _v90r60_independent_episode_key(t,p=None):
     t=dict(t or {})
     p=_v90j_json(t.get('payload')) if p is None else dict(p or {})
@@ -7505,9 +7325,7 @@ def _v90r60_independent_episode_key(t,p=None):
         return None
     return f'{canonical}|{h}|{bucket}'
 
-
 _v90r60_dedup_state={'at':0.0,'changed':0,'duplicates_excluded':0,'last_error':None}
-
 
 def _v90r60_sanitize_duplicate_learning(c,force=False):
     now_ts=time.time()
@@ -7596,7 +7414,6 @@ def _v90r60_sanitize_duplicate_learning(c,force=False):
         print(json.dumps({'event':'V90_R60_INDEPENDENT_EPISODE_ERROR','error':err},
                          ensure_ascii=False,separators=(',',':')),flush=True)
     return dict(_v90r60_dedup_state)
-
 
 def _v90r29_episode_from_trade(t):
     t=dict(t or {})
@@ -7701,7 +7518,6 @@ def _v90r29_episode_from_trade(t):
       }
     }
 
-
 def _v90r29_upsert_episode(c,t):
     e=_v90r29_episode_from_trade(t)
     if not e.get('trade_id'):
@@ -7765,7 +7581,6 @@ def _v90r29_upsert_episode(c,t):
     ))
     return True
 
-
 def _v90r29_backfill(c,limit=1200):
     _v90r29_ensure(c)
     rows=c.execute("""
@@ -7786,7 +7601,6 @@ def _v90r29_backfill(c,limit=1200):
             continue
     return n
 
-
 def _v90r29_profile_keys(row):
     row=row or {}
     plan=row.get('trade_plan') or {}
@@ -7802,7 +7616,6 @@ def _v90r29_profile_keys(row):
       ('SETUP',d,h,setup),
       ('HORIZON',d,h),
     ]
-
 
 def _v90r29_build_profiles(rows):
     buckets={}
@@ -7887,7 +7700,6 @@ def _v90r29_build_profiles(rows):
         out[key]=profile
     return out
 
-
 def _v90r29_refresh(pg_connect,force=False):
     now=time.time()
     if not force and now-float(_v90r29_cache.get('at') or 0.0)<55.0:
@@ -7927,7 +7739,6 @@ def _v90r29_refresh(pg_connect,force=False):
                      ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return _v90r29_cache
 
-
 def _v90r29_profile_for_row(row):
     profiles=_v90r29_cache.get('profiles') or {}
     for key in _v90r29_profile_keys(row):
@@ -7935,7 +7746,6 @@ def _v90r29_profile_for_row(row):
         if p and int(p.get('n') or 0)>=8:
             return dict(p),key
     return None,None
-
 
 def _signal_first_admission(row,policy,drawdown):
     base=dict(_v90r29_base_admission(row,policy,drawdown) or {})
@@ -7972,7 +7782,6 @@ def _signal_first_admission(row,policy,drawdown):
         row['_r29_learning_profile']=base['r29_learning_profile']
     return base
 
-
 def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     tid=(z or {}).get('active_trade_id')
     result=_v90r29_base_close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason)
@@ -8000,7 +7809,6 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
                          ensure_ascii=False,separators=(',',':')),flush=True)
     return result
 
-
 def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=COMMISSION,emit=None):
     try:
         _v90r29_refresh(pg_connect)
@@ -8012,7 +7820,6 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
         summary,pg_connect,model_version,observed_at,commission_rate,emit
     )
 
-
 def report(pg_connect):
     d=dict(_v90r29_base_report(pg_connect) or {})
     try:
@@ -8022,9 +7829,7 @@ def report(pg_connect):
         d['episode_learning_r29']={'status':'UNAVAILABLE','error':str(e)[:180]}
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),22)
-
 
 # VERITAS V90 PROFITABILITY LEARNING R33
 # Goal: improve net profitability and win-rate without blindly increasing activity.
@@ -8062,7 +7867,6 @@ _v90r33_cache={
 }
 _v90r33_last_direction={}
 
-
 def _v90r33_median(xs):
     vals=sorted(float(x) for x in xs if x is not None and math.isfinite(float(x)))
     if not vals:
@@ -8070,7 +7874,6 @@ def _v90r33_median(xs):
     n=len(vals)
     m=n//2
     return vals[m] if n%2 else 0.5*(vals[m-1]+vals[m])
-
 
 def _v90r33_refresh(pg_connect,force=False):
     now=time.time()
@@ -8141,7 +7944,6 @@ def _v90r33_refresh(pg_connect,force=False):
     },ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return _v90r33_cache
 
-
 def _v90r33_timestamp(row):
     row=row or {}
     for key in ('observed_at','generated_at','as_of','timestamp','at','decision_at'):
@@ -8155,7 +7957,6 @@ def _v90r33_timestamp(row):
             except Exception:
                 continue
     return datetime.now(timezone.utc)
-
 
 def _v90r19_stable_confirmation(row):
     row=row or {}
@@ -8193,7 +7994,6 @@ def _v90r19_stable_confirmation(row):
       'token':f'5m:{bucket}'
     }
     return count
-
 
 def _v90r33_edge_eval(row):
     row=row or {}
@@ -8243,7 +8043,6 @@ def _v90r33_edge_eval(row):
       'episodes':int(_v90r33_cache.get('n') or 0),
     }
 
-
 def _signal_first_admission(row,policy,drawdown):
     base=dict(_v90r33_base_admission(row,policy,drawdown) or {})
     if not base.get('open'):
@@ -8263,7 +8062,6 @@ def _signal_first_admission(row,policy,drawdown):
     base['r33_edge_calibration']=ev
     return base
 
-
 def _v90r19_flip_confirmed(summary,z,row,now=None):
     row=row or {}; new_direction=str(row.get('research_decision') or ''); old_direction=str((z or {}).get('direction') or '')
     if not (new_direction in ('LONG','SHORT') and new_direction!=old_direction
@@ -8279,7 +8077,6 @@ def _v90r19_flip_confirmed(summary,z,row,now=None):
           'reverse_allowed':bool(reverse_allowed),'edge':ev},
           ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return True
-
 
 _v90_book_baton = threading.local()
 
@@ -8298,7 +8095,6 @@ def _v90_book_baton_take(c,name,ts):
 
 def _v90_book_baton_clear():
     _v90_book_baton.value=None
-
 
 def _v90r33_harvest(c,p,name,prices,nav,ts,positions=None):
     changes=[]
@@ -8378,7 +8174,6 @@ def _v90r33_harvest(c,p,name,prices,nav,ts,positions=None):
                          ensure_ascii=False,default=str,separators=(',',':')),flush=True)
     return changes
 
-
 def _v90_execution_candidate_rank(row):
     """Execution-boundary invariant: every portfolio candidate has a finite rank.
 
@@ -8434,7 +8229,6 @@ def _v90_execution_candidate_rank(row):
     x['_rank_probability_source']=source
     return x
 
-
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     candidates={str(asset):_v90_execution_candidate_rank(row)
                 for asset,row in (candidates or {}).items()}
@@ -8451,7 +8245,6 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
         c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
     )
 
-
 def _v90j_entry_patch(row,z,ts):
     d=dict(_v90r33_base_entry_patch(row,z,ts) or {})
     ev=(row or {}).get('_r33_edge_calibration') or _v90r33_edge_eval(row)
@@ -8467,7 +8260,6 @@ def _v90j_entry_patch(row,z,ts):
     })
     return d
 
-
 def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=COMMISSION,emit=None):
     try:
         _v90r33_refresh(pg_connect)
@@ -8477,7 +8269,6 @@ def step_all(summary,pg_connect,model_version,observed_at=None,commission_rate=C
     return _v90r33_base_step_all(
         summary,pg_connect,model_version,observed_at,commission_rate,emit
     )
-
 
 def report(pg_connect):
     d=dict(_v90r33_base_report(pg_connect) or {})
@@ -8501,9 +8292,7 @@ def report(pg_connect):
         d['profitability_learning_r33']={'status':'UNAVAILABLE','error':str(e)[:180]}
     return _jsonable(d)
 
-
 V90_CORE_LEARNING_LAYERS=max(int(V90_CORE_LEARNING_LAYERS),23)
-
 
 # VERITAS V90 OBJECTIVE AND DRAWDOWN R35
 # Strategic objective order:
@@ -8526,10 +8315,8 @@ _v90r35_base_report=report
 _v90r35_context_mode=None
 _v90r35_context_portfolio=None
 
-
 def _v90r35_profile(mode=None,portfolio=None):
     return CTC.drawdown_profile(portfolio=portfolio,mode=mode)
-
 
 def _v90r35_current_profile():
     mode=_v90r35_context_mode
@@ -8545,7 +8332,6 @@ def _v90r35_current_profile():
         except Exception:
             portfolio=''
     return _v90r35_profile(mode,portfolio)
-
 
 def _risk_governor(drawdown):
     d=max(0.0,float(drawdown or 0.0))
@@ -8581,7 +8367,6 @@ def _risk_governor(drawdown):
       'hard_drawdown_limit':hard,'drawdown_priority':3,'profile':p['name']
     }
 
-
 def _signal_first_admission_r40(row,policy,drawdown):
     global _v90r35_context_mode
     old_mode=_v90r35_context_mode
@@ -8594,7 +8379,6 @@ def _signal_first_admission_r40(row,policy,drawdown):
         return out
     finally:
         _v90r35_context_mode=old_mode
-
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
     global _v90r35_context_mode,_v90r35_context_portfolio
@@ -8609,7 +8393,6 @@ def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,s
     finally:
         _v90r35_context_mode=old_mode
         _v90r35_context_portfolio=old_portfolio
-
 
 def _report_r39(pg_connect):
     d=dict(_v90r35_base_report(pg_connect) or {})
