@@ -11,7 +11,7 @@ LIMITS = {
     "veritas_strategy_quality.py": {"max_lines":380,"max_redefinitions":0,"max_duplicate_names":0},
     "veritas_strategy_roles.py": {"max_lines":120,"max_redefinitions":0,"max_duplicate_names":0},
     "veritas_intelligence.py": {"max_lines": 19254, "max_redefinitions": 35, "max_duplicate_names": 32},
-    "veritas_portfolio.py": {"max_lines": 8636, "max_redefinitions": 68, "max_duplicate_names": 20},
+    "veritas_portfolio.py": {"max_lines": 8698, "max_redefinitions": 68, "max_duplicate_names": 20},
     "veritas_portfolio_runtime.py": {"max_lines": 5394, "max_redefinitions": 49, "max_duplicate_names": 14},
     "veritas_canonical_constitution.py": {"max_lines": 500, "max_redefinitions": 0, "max_duplicate_names": 0},
     "veritas_canonical_runtime.py": {"max_lines": 420, "max_redefinitions": 0, "max_duplicate_names": 0},

@@ -1467,19 +1467,20 @@ def _close_or_reduce(c,p,name,z,price,target_fraction,nav,ts,reason):
     )
 
 def _step_one(c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary=None):
-    # One complete book snapshot is enough for excursion, trend-hold and
-    # giveback logic. Each writer patches this local copy after its durable SQL.
+    # Reuse one book read while keeping harvest evidence independent from
+    # management-only hold decoration.
     try:
         p,pos=_portfolio_rows(c,name)
         pos=[dict(z) for z in pos]
         _v90j_update_excursions(c,name,prices,ts,pos,False)
+        harvest_pos=[dict(z,payload=_v90j_json(z.get('payload'))) for z in pos]
         _v90r46_mark_trend_hold(c,name,candidates,summary,ts,positions=pos)
         nav,_,_,_=_mark_nav(p,pos,prices)
-        _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=pos)
+        _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=harvest_pos)
     except Exception:
         pass
 
-    p = pos = None
+    p = pos = harvest_pos = None
     return _v90r46_base_step_one(
         c,name,policy,candidates,prices,ruonia,usdrub,ts,commission_rate,summary
     )
