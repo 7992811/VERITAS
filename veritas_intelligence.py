@@ -41,8 +41,7 @@ import veritas_cycle_schedule as VCS
 import veritas_history_diagnostics as VHD
 import veritas_signal_publication as VSP
 import veritas_user_teaching as VUT
-import veritas_startup_guard as VSG
-import veritas_startup_readiness as VSR
+import veritas_startup_guard as VSG, veritas_startup_readiness as VSR
 VERSION = VR.PRODUCT_VERSION
 try:
     import veritas_signal_core as V70
@@ -73,9 +72,7 @@ FAST_LOOP_MARKET_WORKERS = max(2, min(6, int(os.getenv('VERITAS_FAST_LOOP_MARKET
 HEAVY_LEARNING_INTERVAL_SECONDS = max(600, int(os.getenv('VERITAS_HEAVY_LEARNING_INTERVAL_SECONDS','900')))
 HEAVY_LEARNING_START_DELAY_SECONDS = max(15, int(os.getenv('VERITAS_HEAVY_LEARNING_START_DELAY_SECONDS','45')))
 FAST_LOOP_TARGET_SECONDS = max(10.0, float(os.getenv('VERITAS_FAST_LOOP_TARGET_SECONDS','30')))
-_BOOTSTRAP_READY = False
-_PORTFOLIO_RUNTIME_READY = False
-_STARTUP_GATE = VSG.ReadinessGate()
+_BOOTSTRAP_READY = False; _PORTFOLIO_RUNTIME_READY = False; _STARTUP_GATE = VSG.ReadinessGate()
 DB_PATH = os.getenv('VERITAS_LEDGER_PATH', '/tmp/veritas_decisions.sqlite3')
 _V90_DB_ENV_KEYS=('DATABASE_URL','VERITAS_DATABASE_URL','POSTGRES_URL','POSTGRESQL_URL','POSTGRES_INTERNAL_URL','RENDER_DATABASE_URL')
 DATABASE_URL = next((os.getenv(k,'').strip() for k in _V90_DB_ENV_KEYS if os.getenv(k,'').strip()), '')
@@ -16688,8 +16685,7 @@ def _v90r23_trade_report_fast():
 
 def _v90r26_dashboard_bootstrap(signals_only=False):
     """One fast UI payload: signals, five portfolios, open positions and recent closed trades."""
-    cyc=fresh_cycle_snapshot()
-    startup=_STARTUP_GATE.snapshot()
+    cyc=fresh_cycle_snapshot(); startup=_STARTUP_GATE.snapshot()
     publication={'signals_updated_at':cyc.get('signals_updated_at'),'cycle_in_progress':cyc.get('cycle_in_progress',False)}
     from veritas_dashboard_projection import signal_display
     signals=[signal_display(z) for z in (cyc.get('summary') or []) if str(z.get('asset') or '')!='NDX']
@@ -19093,8 +19089,7 @@ def main():
     if pg_boot.get('ok'):
         for receipt in VUT.seed_all_user_teachings(pg_event,_read_user_teaching):
             emit('user_teaching_applied',**receipt)
-    # Storage audit is diagnostic; VSR defers it until the live-state gate is out of the critical path.
-    # R16 startup discipline: never block the live market loop on full historical
+    # R16 startup discipline: storage audit is deferred; never block the live market loop on full historical
     # portfolio reports or loss audits. Portfolio readiness is tracked separately:
     # liveness/signals can start, but /readyz must not claim a complete product
     # when any of the five canonical books is unavailable.
