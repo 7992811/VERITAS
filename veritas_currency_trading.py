@@ -494,8 +494,18 @@ class CurrencyTradingCoordinator:
                     continue
                 try:
                     if proposal.get("broker_order_id"):
-                        result = self.adapter.get_order(self.account_id, proposal["broker_order_id"])
-                        lookup = "broker_order_id"
+                        try:
+                            result = self.adapter.get_order(self.account_id, proposal["broker_order_id"])
+                            lookup = "broker_order_id"
+                        except Exception as exc:
+                            # T-Bank may stop resolving an exchange order id while
+                            # the immutable request UUID is still queryable. This
+                            # is a read-only recovery fallback; it never resubmits.
+                            if getattr(exc, "not_found", False) is not True:
+                                raise
+                            result = self.adapter.reconcile_submission(
+                                self.account_id, proposal["client_order_id"])
+                            lookup = "client_order_id_fallback"
                     else:
                         # Read-only recovery path. It converts an explicit broker 404
                         # into an UNKNOWN OrderResult with a stable diagnostic code
