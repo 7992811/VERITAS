@@ -99,7 +99,7 @@ def _trend_acceleration_state(row,direction,policy):
     cfg=getattr(CTC,'TREND_ACCELERATION_POLICY',{}) or {}
     out={'active':False,'stage':None,'target_fraction':None,'reason':'ACCELERATION_NOT_CONFIRMED'}
     mode=str((policy or {}).get('mode') or '')
-    if not cfg.get('enabled') or mode=='CURRENCY' or direction not in ('LONG','SHORT'):
+    if not cfg.get('enabled') or direction not in ('LONG','SHORT'):
         return out
     if str((row or {}).get('research_decision') or '')!=direction:
         return dict(out,reason='ACCELERATION_DIRECTION_MISMATCH')
@@ -137,7 +137,11 @@ def _trend_acceleration_state(row,direction,policy):
     event_impulse=VTDE.event_impulse_assess(row,direction)
     if event_impulse.get('eligible'):
         ecfg=cfg.get('event_impulse') or {}
-        if mode=='AGGRESSIVE':
+        if mode=='CURRENCY':
+            fast=float(ecfg.get('fast_target_currency') or 1.00)
+            mid_target=float(ecfg.get('mid_target_currency') or 5.00)
+            maximum=float(ecfg.get('confirmed_target_currency') or 10.00)
+        elif mode=='AGGRESSIVE':
             fast=float(ecfg.get('fast_target_aggressive') or 1.50)
             mid_target=float((cfg.get('stage_targets_aggressive') or {}).get('MID_CONFIRMED') or 3.00)
             maximum=float(ecfg.get('confirmed_target_aggressive') or 5.00)
@@ -145,10 +149,11 @@ def _trend_acceleration_state(row,direction,policy):
             fast=float(ecfg.get('fast_target_standard') or .50)
             mid_target=float((cfg.get('stage_targets_standard') or {}).get('MID_CONFIRMED') or .75)
             maximum=float(ecfg.get('confirmed_target_standard') or 1.00)
-        # A senior confirmation is sufficient for maximum scale. A mid
-        # confirmation plus a confirmed catalyst is also sufficient because
-        # the event has already been established causally by price/activity.
-        if senior or (mid and event_impulse.get('news_confirmed')):
+        if event_impulse.get('news_conflict'):
+            stage='EVENT_NEWS_CONFLICT_RISK_REVIEW'; target=fast
+        elif event_impulse.get('immediate_max'):
+            stage='GAME_CHANGER_MAX_IMMEDIATE'; target=maximum
+        elif senior or (mid and event_impulse.get('news_confirmed')):
             stage='EVENT_MAX_CONFIRMED'; target=maximum
         elif mid:
             stage='EVENT_MID_CONFIRMED'; target=mid_target
@@ -164,6 +169,11 @@ def _trend_acceleration_state(row,direction,policy):
                 'temporary_max_fraction':caps.get('max_fraction'),
                 'temporary_max_gross':caps.get('max_gross'),
                 'policy_version':cfg.get('version')}
+
+    # Currency shares only the event-impulse/game-changer rule. Ordinary trend
+    # acceleration and trend-day scaling remain non-Currency policies.
+    if mode=='CURRENCY':
+        return dict(out,reason='CURRENCY_EVENT_IMPULSE_ONLY')
 
     try:
         expected=abs(float(plan.get('expected_move_pct') or (row or {}).get('expected_move_pct') or 0.0))
@@ -587,14 +597,19 @@ def fast_entry_pass(ns,rows,now,*,runtime=False,portfolio_names=None):
             )['trade_plan'].get('entry_timing_gate') or {}).get('eligible'))
             for candidates in grouped.values() for row in candidates]
         pending = any(readiness)
-        lock_state=VPG._mutex.snapshot()
+        snapshot=getattr(VPG._mutex,'snapshot',None)
+        lock_state=snapshot() if callable(snapshot) else {}
         waiting_ordinary=int(lock_state.get('ordinary_waiters') or 0)>0
         reserved=False
         if pending and not waiting_ordinary:
-            VPG._mutex.reserve_entry_turn(seconds=2.0)
-            reserved=True
+            reserve=getattr(VPG._mutex,'reserve_entry_turn',None)
+            if callable(reserve):
+                try: reserve(seconds=2.0)
+                except TypeError: reserve()
+                reserved=True
         else:
-            VPG._mutex.cancel_entry_turn()
+            cancel=getattr(VPG._mutex,'cancel_entry_turn',None)
+            if callable(cancel): cancel()
         return {'status':'BUSY','reason':reason,'paper_only':True,
                 'entry_turn_reserved':reserved,'entry_retry_pending':pending,
                 'yielded_to_waiting_portfolio':bool(pending and waiting_ordinary)}

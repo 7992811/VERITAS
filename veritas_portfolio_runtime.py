@@ -11,6 +11,7 @@ import veritas_canonical_runtime as VCR
 import veritas_timeframe_policy as TFP
 import veritas_release as VR, veritas_execution_efficiency as VEE
 import veritas_portfolio_reporting as VPRPT
+import veritas_event_impulse as VEI
 _BASE = {k: v for k, v in vars(_vp_base).items() if not k.startswith('__')}
 globals().update(_BASE)
 # VERITAS V90 CANONICAL EXECUTION KERNEL R42
@@ -5127,7 +5128,7 @@ def canonical_open_or_add(c,p,name,asset,direction,price,target_fraction,nav,ts,
             return 0.0
         requested=min(requested or float(admission['fraction']),float(admission['fraction']))
 
-    cap=float(policy.get('max_fraction') or policy.get('max_single_asset_fraction') or 0.0)
+    cap=VEI.position_cap(row,policy,float(policy.get('max_fraction') or policy.get('max_single_asset_fraction') or 0.0))
     if cap>0:
         requested=min(requested,cap)
     step=float(policy.get('position_step') or .05)

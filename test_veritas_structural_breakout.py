@@ -6,6 +6,8 @@ import unittest
 import veritas_price_source as VPS
 import veritas_structural_breakout as SB
 import veritas_timeframe_structure as TS
+import veritas_timeframe_policy as TFP
+import veritas_canonical_runtime as VCR
 
 
 POLICY = {"atr_period": 6, "pivot_left": 2, "pivot_right": 2,
@@ -71,6 +73,31 @@ class CausalQuoteBreakoutTests(unittest.TestCase):
         self.assertLess(context["closed_at"], event["signal_at"])
         self.assertEqual(event["confirmation"], "VERIFIED_QUOTE_CROSS")
         self.assertLess(event["stop_price"], event["stop_anchor"])
+
+    def test_intrabar_senior_break_is_game_changer_and_new_fields_are_sealed(self):
+        raw, at = raw_at(price=101.0)
+        context = self.build(raw, at, horizon="1m")
+        event = context["event"]
+        self.assertEqual(event["trigger_timeframe"], "1h")
+        self.assertTrue(event["senior_level_break"], event)
+        self.assertTrue(event["game_changer_extreme"], event)
+        self.assertEqual(event["intrabar_volatility_shock"]["severity"], "GAME_CHANGER_EXTREME")
+        self.assertLess(context["closed_at"], event["signal_at"])
+        self.assertTrue(SB.validate_event(event, context["source_identity"])["eligible"])
+        tampered = deepcopy(event)
+        tampered["intrabar_volatility_shock"]["ratios"]["1m"] += .01
+        self.assertFalse(SB.validate_event(tampered, context["source_identity"])["eligible"])
+
+    def test_sealed_quote_event_enters_candidate_book_while_slow_model_is_no_trade(self):
+        raw, at = raw_at(price=101.0)
+        context = self.build(raw, at, horizon="1m")
+        row = dict(raw, horizon="1m", research_decision="NO_TRADE", decision="NO_TRADE",
+                   timeframe_entry_context=context, trend_entry_context=context,
+                   trade_plan={"timeframe_entry_context":context, "trade_integrity":{}})
+        self.assertEqual(TFP.structural_event_direction(row), "LONG")
+        book = VCR.candidate_book([row])
+        self.assertIn("CNYRUBF", book)
+        self.assertEqual(VCR._direction(book["CNYRUBF"]), "LONG")
 
     def test_pivot_confirmed_at_this_boundary_is_available_immediately(self):
         raw, at = raw_at()

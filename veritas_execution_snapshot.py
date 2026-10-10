@@ -14,7 +14,9 @@ ECONOMICS_FIELDS = ('economics_policy', 'target_ladder', 'target_execution_model
                     'modeled_round_trip_cost_pct', 'minimum_reward_risk',
                     'expected_hold_seconds', 'position_age_seconds', 'entry_reference_price',
                     'evaluated_fraction_nav', 'expected_move_pct', 'minimum_expected_move_pct',
-                    'observed_spread_bps')
+                    'observed_spread_bps', 'execution_style',
+                    'fill_confirmation_required', 'partial_fill_policy', 'reprice_policy',
+                    'execution_instrument_required', 'event_news_check')
 
 
 def _digest(value):

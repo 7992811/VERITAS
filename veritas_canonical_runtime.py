@@ -15,6 +15,7 @@ import veritas_strategy_roles as VROLE
 import veritas_timeframe_policy as TFP
 import veritas_stop_risk as VSR
 import veritas_admission_trace as VAT
+import veritas_event_impulse as VEI
 
 VERSION=CTC.BASIS_RUNTIME
 TRIGGER_HORIZONS=("1m","5m","1h","4h")
@@ -27,7 +28,8 @@ def _num(v, default=None):
         return default
 
 def _direction(row):
-    return str((row or {}).get("research_decision") or (row or {}).get("decision") or "NO_TRADE")
+    d=str((row or {}).get("research_decision") or (row or {}).get("decision") or "NO_TRADE")
+    return TFP.structural_event_direction(row) if d not in ("LONG","SHORT") and TFP.structural_event_direction(row) else d
 
 def _tier(row):
     return str((row or {}).get("signal_tier") or (row or {}).get("execution_signal_tier") or "").upper()
@@ -134,6 +136,8 @@ def _fraction(policy, drawdown, soft=False):
         return 0.0,rg
     f*=float(rg.get("multiplier") or 0.0)
     cap=float(p.get("max_fraction") or p.get("max_single_asset_fraction") or p.get("max_gross") or 1.0)
+    cap=VEI.effective_cap(p.get("_row") or {},p,cap)
+    f=VEI.requested_fraction(p.get("_row") or {},p,rg,f,cap,soft=soft)
     step=float(p.get("position_step") or 0.05)
     f=min(f,cap)
     return max(0.0,math.floor(f/step+1e-9)*step),rg
@@ -160,6 +164,8 @@ def _evaluate(row, policy, drawdown, now=None, *, clock):
     d=_direction(raw)
     if d not in ("LONG","SHORT"):
         return {"open":False,"fraction":0.0,"reason":"NO_DIRECTION","hard_veto":False,"canonical_stage":"THESIS"}
+    if str(raw.get("research_decision") or raw.get("decision") or "") not in ("LONG","SHORT"):
+        raw["research_decision"]=d
 
     if clock is None:
         return {"open":False,"fraction":0.0,"reason":"SAME_TF_DECISION_TIME_REQUIRED","hard_veto":True,"canonical_stage":"DATA"}

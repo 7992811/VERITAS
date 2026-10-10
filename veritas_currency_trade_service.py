@@ -851,7 +851,6 @@ class TradeHttpApplication:
                     "sandbox_autotrade_enabled": self.sandbox_autotrade_enabled,
                     "robot_autotrade_enabled": self.robot_autotrade_enabled,
                     "block_reason": "CURRENCY_ACCOUNT_NOT_BOUND"}
-        self._schedule_reconcile()
         if callable(getattr(self, "console_binding", None)) and self.console_binding().get("paused", True):
             self._remember_poll("PROPOSALS_PAUSED", binding_state="bound")
             return {"ok": True, "enabled": True, "items": [], "execution_enabled": False,
@@ -943,6 +942,10 @@ class TradeHttpApplication:
                 if reason == "BROKER_COST_RECONCILIATION_REQUIRED":
                     reason = self.facts.block_reason or reason
             pending = self._pending()
+        # Reconciliation is useful only when there is actual execution state to
+        # settle. Idle/blocked entry polls must not spawn hidden broker work.
+        if unsettled:
+            self._schedule_reconcile()
         items = ([] if (self.sandbox_autotrade_enabled or self.robot_autotrade_enabled) else
                  [self._public(p) for p in pending if p.get("status") == "PENDING_DELIVERY"][:1])
         self._remember_poll(reason, binding_state="bound", pending=len(pending),

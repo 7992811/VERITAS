@@ -262,7 +262,10 @@ class CurrencyTradingCoordinator:
                     reason = "CURRENCY_DRAWDOWN_LIMIT"
                 elif stop is not None and sign * (price - decimal(stop)) <= 0:
                     reason = "STRUCTURAL_STOP_REACHED"
-                elif target is not None and sign * (price - decimal(target)) >= 0:
+                elif (target is not None
+                      and held.get("fixed_take_profit_deferred") is not True
+                      and held.get("target_reference_only") is not True
+                      and sign * (price - decimal(target)) >= 0):
                     reason = "STRATEGY_TARGET_REACHED"
                 else:
                     opposite = "SHORT" if sign > 0 else "LONG"

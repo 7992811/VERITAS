@@ -97,6 +97,16 @@ class ContractSizingTests(Fixtures, unittest.TestCase):
                 P.revalidate({**terms, **change}, self.spec, self.account, self.quote,
                              now=self.now, canonical_event_valid=True)
 
+    def test_game_changer_live_terms_keep_target_as_reference_only(self):
+        admission = deepcopy(self.admission)
+        admission["prepared_plan"]["fixed_take_profit_deferred"] = True
+        admission["prepared_plan"]["target_reference_only"] = True
+        admission["prepared_plan"]["event_impulse_exit_mode"] = "STRUCTURAL_EXHAUSTION_ONLY"
+        terms = self.entry(admission=admission)
+        self.assertTrue(terms["fixed_take_profit_deferred"])
+        self.assertTrue(terms["target_reference_only"])
+        self.assertEqual(terms["event_impulse_exit_mode"], "STRUCTURAL_EXHAUSTION_ONLY")
+
     def test_nominal_zero_diagnostic_retained_when_minimum_policy_is_off(self):
         admission = deepcopy(self.admission)
         admission["fraction"] = .8
@@ -380,6 +390,25 @@ class CoordinatorTests(Fixtures, unittest.TestCase):
                       callback_query_id=uuid.uuid4().hex)
         values.update(changes)
         return self.repo.decide(delivered["callbacks"]["approve"], **values)
+
+    def test_game_changer_reference_target_does_not_request_currency_exit(self):
+        account = replace(self.account, signed_lots=2, managed_signed_lots=2)
+        held = {**self.held, "target_price": "12.300",
+                "fixed_take_profit_deferred": True, "target_reference_only": True,
+                "event_impulse_exit_mode": "STRUCTURAL_EXHAUSTION_ONLY"}
+        self.facts = C.TradeFacts(self.spec, account, self.quote, held)
+        with patch.object(self.coordinator, "_create", return_value={"ok": True}) as create:
+            self.coordinator.prepare_next()
+        self.assertEqual(len(create.call_args.args), 2)
+
+        ordinary = {k:v for k,v in held.items()
+                    if k not in ("fixed_take_profit_deferred", "target_reference_only",
+                                 "event_impulse_exit_mode")}
+        self.facts = C.TradeFacts(self.spec, account, self.quote, ordinary)
+        with patch.object(self.coordinator, "_create", return_value={"ok": True}) as create:
+            self.coordinator.prepare_next()
+        request = create.call_args.args[2]
+        self.assertEqual(request["reason"], "STRATEGY_TARGET_REACHED")
 
     def test_preparation_only_persists_reviewable_terms_and_never_calls_broker(self):
         proposal = self.coordinator.prepare()
