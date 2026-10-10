@@ -928,8 +928,8 @@ class TBankTradingAdapter:
             return self._unknown(body, "ORDER_NOT_FOUND_UNRESOLVED" if exc.not_found else exc.code)
 
     def recover_submission_from_operations(self, account_id, instrument_uid, client_order_id,
-                                           side, lots, sent_at, *, window_minutes=20,
-                                           max_pages=10, max_candidates=50):
+                                           side, lots, sent_at, *, window_minutes=1440,
+                                           max_pages=25, max_candidates=200):
         """Read only recovery for an order whose saved broker id and request id no longer resolve.
 
         T-Bank documents that operation IDs may change over time and recommends
@@ -943,7 +943,7 @@ class TBankTradingAdapter:
         client = _uuid(client_order_id)
         normalized_side = _side(side)
         requested_lots = _integer(lots, minimum=1, code="INVALID_LOTS")
-        if type(window_minutes) is not int or not 1 <= window_minutes <= 120:
+        if type(window_minutes) is not int or not 1 <= window_minutes <= 1440:
             raise TradingError("INVALID_HISTORICAL_RECOVERY_WINDOW")
         if type(max_pages) is not int or not 1 <= max_pages <= 100:
             raise TradingError("INVALID_HISTORICAL_RECOVERY_PAGE_LIMIT")
@@ -990,7 +990,11 @@ class TBankTradingAdapter:
                                "UNKNOWN", "UNKNOWN",
                                code="HISTORICAL_RECOVERY_PAGE_LIMIT")
 
-        matches = {}
+        if not candidates:
+            return OrderResult(client, None, uid, normalized_side, requested_lots, None,
+                               "UNKNOWN", "UNKNOWN",
+                               code="HISTORICAL_OPERATION_CANDIDATES_EMPTY")
+        matches, resolved_states, foreign_requests = {}, 0, 0
         for operation_id in candidates:
             try:
                 observed = self.get_order(account, operation_id)
@@ -999,7 +1003,9 @@ class TBankTradingAdapter:
                     continue
                 return OrderResult(client, None, uid, normalized_side, requested_lots, None,
                                    "UNKNOWN", "UNKNOWN", code=exc.code)
+            resolved_states += 1
             if observed.client_order_id != client:
+                foreign_requests += 1
                 continue
             if (observed.instrument_uid != uid or observed.side != normalized_side
                     or observed.lots_requested != requested_lots):
@@ -1014,9 +1020,14 @@ class TBankTradingAdapter:
             return OrderResult(client, None, uid, normalized_side, requested_lots, None,
                                "UNKNOWN", "UNKNOWN",
                                code="HISTORICAL_RECOVERY_AMBIGUOUS")
+        if resolved_states == 0:
+            code = "HISTORICAL_OPERATION_STATES_NOT_FOUND"
+        elif foreign_requests:
+            code = "HISTORICAL_REQUEST_UUID_NOT_OBSERVED"
+        else:
+            code = "HISTORICAL_ORDER_NOT_FOUND_UNRESOLVED"
         return OrderResult(client, None, uid, normalized_side, requested_lots, None,
-                           "UNKNOWN", "UNKNOWN",
-                           code="HISTORICAL_ORDER_NOT_FOUND_UNRESOLVED")
+                           "UNKNOWN", "UNKNOWN", code=code)
 
     def _check_before_send(self, check):
         if check is None:
