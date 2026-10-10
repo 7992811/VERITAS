@@ -202,7 +202,11 @@ class AuthorityTests(Fixtures, unittest.TestCase):
         self.assertTrue(result["eligible"], result)
         self.assertEqual(result["account_equity_rub"], "1000000")
         self.assertAlmostEqual(result["account_risk"]["fraction_nav_after"], 24690/1000000)
-        self.assertEqual(result["live_authorization"]["order_gate"]["live_risk_profile"], A.CTC.LIVE_RISK_POLICY)
+        expected_risk = A.CTC.currency_live_risk_policy(result["account_risk"]["drawdown"])
+        self.assertEqual(result["live_authorization"]["order_gate"]["live_risk_profile"], expected_risk)
+        self.assertEqual(result["account_risk"]["portfolio_risk_profile"], expected_risk)
+        self.assertEqual(result["live_authorization"]["order_gate"]["minimum_calibrated_probability"], .62)
+        self.assertTrue(result["live_authorization"]["order_gate"]["probability_required"])
         self.assertEqual(result["live_authorization"]["order_gate"]["economics"]["cost_policy"]["entry_cost_multiple"], 1.1)
         self.assertEqual(result["live_authorization"]["order_gate"]["calibrated_probability"], .8)
         self.assertTrue(result["live_authorization"]["order_gate"]["source_gate"]["eligible"])
@@ -386,7 +390,7 @@ class AuthorityTests(Fixtures, unittest.TestCase):
         self.publish(doc, blobs)
         self.assertTrue(any(code.startswith("LIVE_CORRELATION_PAIR_REQUIRED:") for code in self.authorize()["blockers"]))
 
-    def test_add_checks_entire_resulting_asset_exposure_against_single_asset_limit(self):
+    def test_add_uses_currency_portfolio_single_asset_limit_not_generic_live_limit(self):
         account = replace(self.account, signed_lots=1, managed_signed_lots=1)
         held = deepcopy(self.held)
         held["target_price"] = "12.65"
@@ -399,7 +403,8 @@ class AuthorityTests(Fixtures, unittest.TestCase):
         result = self.authorize()
         self.assertEqual(self.terms["lots"], 1)
         self.assertAlmostEqual(result["account_risk"]["fraction_nav_after"], 24690/80000)
-        self.assertIn("SINGLE_ASSET_LIMIT", result["blockers"])
+        self.assertNotIn("SINGLE_ASSET_LIMIT", result["blockers"])
+        self.assertEqual(result["live_authorization"]["order_gate"]["live_risk_profile"]["max_single_asset_fraction"], 10.0)
         self.assertGreater(result["live_authorization"]["order_gate"]["economics"]["modeled_funding_pct"], 0)
 
     def test_paper_eligible_flag_cannot_waive_live_rr_floor_after_geometry_changes(self):
