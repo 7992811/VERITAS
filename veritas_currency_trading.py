@@ -501,7 +501,11 @@ class CurrencyTradingCoordinator:
                             # T-Bank may stop resolving an exchange order id while
                             # the immutable request UUID is still queryable. This
                             # is a read-only recovery fallback; it never resubmits.
-                            if getattr(exc, "not_found", False) is not True:
+                            stale_exchange_id = (
+                                row_status == "ACKNOWLEDGED"
+                                and getattr(exc, "code", None) in {"BROKER_HTTP_400", "INVALID_BROKER_JSON"}
+                            )
+                            if getattr(exc, "not_found", False) is not True and not stale_exchange_id:
                                 raise
                             result = self.adapter.reconcile_submission(
                                 self.account_id, proposal["client_order_id"])
