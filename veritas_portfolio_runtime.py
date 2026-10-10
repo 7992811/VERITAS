@@ -1351,13 +1351,17 @@ def _v90r46_giveback_harvest(c,p,name,prices,nav,ts,positions=None):
             continue
 
         try:
-            px=float(prices[asset])
+            quote=VPG.quote_for_position(z,now=ts)
+            if not quote:
+                continue
+            px=float(quote['price'])
             entry=float(z.get('avg_entry_price') or 0.0)
             units=abs(float(z.get('units') or 0.0))
         except Exception:
             continue
         if px<=0 or entry<=0 or units<=0:
             continue
+        z.update(_execution_quote=quote,_execution_quote_frozen=True)
 
         direction=str(z.get('direction') or '')
         current_pct=100.0*((px/entry-1.0) if direction=='LONG' else (entry/px-1.0))

@@ -231,7 +231,10 @@ class ContinuousLearning:
                 ("learning_knowledge_catalog", self.knowledge_catalog, 60, 6),
                 ("learning_trade_evidence", self.trades, 30, 6),
                 ("learning_progress", self.progress, 120, 6),
-                ("learning_intelligence", self.intelligence, 15, 6),
+                # The staged scorecard freezes 2,200 joined evidence rows and
+                # checkpoints them durably. Six seconds was below observed
+                # production latency and caused perpetual restart/deferral.
+                ("learning_intelligence", self.intelligence, 15, 12),
                 ("learning_memory", self.memory, 300, 6),
                 ("learning_v2_shadow", self.learning_v2_shadow, 60, 5),
                 ("learning_v2_replay", self.learning_v2_replay, 180, 5))

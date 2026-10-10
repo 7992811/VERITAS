@@ -202,7 +202,7 @@ class ProducerContracts(unittest.TestCase):
             self.assertEqual(cursor['phase'], 'scorecard')
             self.assertEqual(daily.call_count, 1)
             self.assertEqual(app.lane.options['learning_intelligence'],
-                             {'interval_seconds': 15, 'lightweight': True, 'estimated_peak_mb': 16, 'max_seconds': 6})
+                             {'interval_seconds': 15, 'lightweight': True, 'estimated_peak_mb': 16, 'max_seconds': 12})
 
     def test_failed_daily_audit_keeps_completed_scorecard_cursor_for_retry(self):
         app = C.ContinuousLearning(namespace(lambda: None))

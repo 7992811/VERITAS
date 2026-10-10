@@ -122,6 +122,32 @@ class AssetManagementIntelligenceTests(unittest.TestCase):
         self.assertAlmostEqual(out["score"], round(sum(v for v in out["components"].values() if v is not None), 1))
         self.assertEqual(sum(out["component_maximums"].values()), 100)
 
+    def test_partial_coverage_caps_confidence_and_reference_status(self):
+        c = _FakeConn()
+        episodes = [{
+            "asset": "BTC", "horizon": "1h", "regime": "UPTREND_MID_VOL",
+            "decision": "LONG", "reference_decision": "NO_TRADE", "forward_return": .02,
+        } for _ in range(200)]
+        inputs = {
+            "episodes": episodes,
+            "portfolio": {"n": 50, "win_rate": .60, "profit_factor": 1.20,
+                          "avg_return_on_entry_nav": .001, "net_pnl_rub": 1000.,
+                          "max_drawdown": .04},
+            "learning": {"n": 0, "avg_capture_ratio": None,
+                         "avg_movement_realization_ratio": None,
+                         "stop_error_rate": None, "exit_capture_error_rate": None,
+                         "cost_drag_rate": None},
+            "knowledge": {"sources": 10, "rules": 10, "validated_oos_rules": 0,
+                          "application_n": 0, "application_rate": 0.,
+                          "applied_hit_rate": None, "applied_utility": None},
+        }
+        out = VAMI._build_scorecard_unlocked(
+            lambda: c, {"status": "MEASURABLE", "index_vs_start": 110.},
+            "fixture-partial-coverage", cache_seconds=0, publish=False, inputs=inputs)
+        self.assertEqual(out["confidence"], "MEDIUM")
+        self.assertEqual(out["benchmarks"]["stateless_ai"]["status"], "PARTIAL")
+        self.assertLess(out["coverage"]["observed_max_points"], 100)
+
     def test_missing_learning_is_null_and_cannot_earn_error_free_movement_credit(self):
         c = _FakeConn()
         c.learning = []

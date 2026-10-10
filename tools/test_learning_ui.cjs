@@ -70,6 +70,21 @@ assert.match(html,/Показан последний полученный рез
 assert.match(html,/Расчёт: 07\.10, 16:04 МСК/);
 assert.equal(ui.st.intelligence.cache_age_seconds,301);
 assert.equal(ui.st.intelligence.score,42.5);
+assert.match(html,/Эффективность на дату расчёта/);
+assert.doesNotMatch(html,/Эффективность сегодня/);
+const overclaimed=structuredClone(raw);
+overclaimed.asset_management_intelligence.confidence='HIGH';
+overclaimed.asset_management_intelligence.coverage.observed_max_points=68;
+html=render(overclaimed);
+assert.match(html,/доказательность: средняя/);
+const partialReference=structuredClone(raw);
+partialReference.asset_management_intelligence.benchmarks.stateless_ai={
+  status:'PARTIAL',sample_n:360,hit_rate_delta_pp:null,large_move_capture_delta_pp:26.8
+};
+html=render(partialReference);
+assert.match(html,/точность: выборка формируется/);
+assert.match(html,/частично измеримо/);
+assert.doesNotMatch(html,/— точность/);
 const envelopeDelayed=structuredClone(raw);envelopeDelayed.refresh_delayed=true;
 assert.match(render(envelopeDelayed),/Обновление оценки задержано/);
 
