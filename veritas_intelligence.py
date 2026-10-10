@@ -41,7 +41,7 @@ import veritas_cycle_schedule as VCS
 import veritas_history_diagnostics as VHD
 import veritas_signal_publication as VSP
 import veritas_user_teaching as VUT
-import veritas_startup_guard as VSG, veritas_startup_readiness as VSR
+import veritas_startup_guard as VSG
 VERSION = VR.PRODUCT_VERSION
 try:
     import veritas_signal_core as V70
@@ -19127,7 +19127,7 @@ def main():
     # Publish the last durable matrix, including the minute lane, on startup.
     import veritas_breakout_runtime as VBR
     VBR.restore_snapshot(globals())
-    VSR.prime(globals(),canonical_state)
+    VSG.prime_runtime(globals(),canonical_state)
     try:
         _boot_ui=_v90r26_dashboard_bootstrap()
         emit('v90_dashboard_bootstrap_selftest',
@@ -19168,9 +19168,9 @@ def main():
         VBR.start(globals(),entry_pass=lambda rows,clock:VSL.fast_entry_pass(globals(),rows,clock,runtime=True))
     threading.Thread(target=loop, daemon=True).start()
     if not _BOOTSTRAP_READY:
-        threading.Thread(target=VSR.retry_loop,args=(globals(),),daemon=True,
+        threading.Thread(target=VSG.retry_runtime,args=(globals(),),daemon=True,
                          name='veritas-startup-readiness').start()
-    if pg_boot.get('ok'): VSR.schedule_storage_audit(_v90_storage_audit,emit)
+    if pg_boot.get('ok'): VSG.schedule_storage_audit(_v90_storage_audit,emit)
     # R38 always runs: it exits immediately after a healthy write test, but if
     # Postgres is temporarily unavailable/full it waits for the Resume window.
     threading.Thread(target=_v90r38_storage_rescue_loop, daemon=True,
