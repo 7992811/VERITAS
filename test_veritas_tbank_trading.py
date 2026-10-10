@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import copy
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 import traceback
@@ -218,6 +219,62 @@ class AdapterTests(unittest.TestCase):
                 for flag in ("withoutCommissions", "withoutTrades", "withoutOvernights"):
                     self.assertIs(call["body"][flag], False)
                 self.assertFalse(adapter.capabilities()["execution_enabled"])
+
+    def test_expired_day_order_recovers_zero_fill_from_complete_report_and_inactive_orders(self):
+        sent = datetime.now(timezone.utc) - timedelta(days=2)
+        broker_id = "broker-order-expired-day"
+        def broker_report(name, body):
+            self.assertEqual(name, "broker_report")
+            if "generateBrokerReportRequest" in body:
+                return {"generateBrokerReportResponse": {"taskId": "report-task-day"}}
+            return {"getBrokerReportResponse": {
+                "taskId": "report-task-day", "itemsCount": 0, "pagesCount": 1,
+                "page": 0, "brokerReport": []}}
+        with patch.object(self.adapter, "_request", side_effect=broker_report), \
+             patch.object(self.adapter, "list_orders", return_value=[]):
+            first = self.adapter.recover_submission_from_broker_report(
+                ACCOUNT, UID, CLIENT, broker_id, "BUY", 2, sent,
+                ticker="CNYRUBF", lot_size=1, time_in_force="TIME_IN_FORCE_DAY",
+                limit_price=Decimal("12.345"))
+            second = self.adapter.recover_submission_from_broker_report(
+                ACCOUNT, UID, CLIENT, broker_id, "BUY", 2, sent,
+                ticker="CNYRUBF", lot_size=1, time_in_force="TIME_IN_FORCE_DAY",
+                limit_price=Decimal("12.345"))
+        self.assertEqual(first.code, "BROKER_REPORT_GENERATING")
+        self.assertEqual(second.status, "CANCELLED")
+        self.assertEqual(second.lots_executed, 0)
+        self.assertEqual(second.code, "BROKER_REPORT_PROVES_ZERO_FILL_DAY")
+        self.assertEqual(second.time_in_force, "TIME_IN_FORCE_DAY")
+        self.assertEqual(self.transport.count("PostOrder"), 0)
+
+    def test_expired_day_order_stays_unresolved_when_still_active(self):
+        sent = datetime.now(timezone.utc) - timedelta(days=2)
+        broker_id = "broker-order-still-active"
+        active = T.OrderResult(
+            CLIENT, broker_id, UID, "BUY", 2, 0, "NEW", "ACCEPTED",
+            broker_status="EXECUTION_REPORT_STATUS_NEW",
+            order_type="ORDER_TYPE_LIMIT", limit_price=Decimal("12.345"),
+            time_in_force="TIME_IN_FORCE_DAY")
+        def broker_report(name, body):
+            self.assertEqual(name, "broker_report")
+            if "generateBrokerReportRequest" in body:
+                return {"generateBrokerReportResponse": {"taskId": "report-task-active"}}
+            return {"getBrokerReportResponse": {
+                "taskId": "report-task-active", "itemsCount": 0, "pagesCount": 1,
+                "page": 0, "brokerReport": []}}
+        with patch.object(self.adapter, "_request", side_effect=broker_report), \
+             patch.object(self.adapter, "list_orders", return_value=[active]):
+            self.adapter.recover_submission_from_broker_report(
+                ACCOUNT, UID, CLIENT, broker_id, "BUY", 2, sent,
+                ticker="CNYRUBF", lot_size=1, time_in_force="TIME_IN_FORCE_DAY",
+                limit_price=Decimal("12.345"))
+            result = self.adapter.recover_submission_from_broker_report(
+                ACCOUNT, UID, CLIENT, broker_id, "BUY", 2, sent,
+                ticker="CNYRUBF", lot_size=1, time_in_force="TIME_IN_FORCE_DAY",
+                limit_price=Decimal("12.345"))
+        self.assertEqual(result.status, "UNKNOWN")
+        self.assertEqual(result.code, "BROKER_REPORT_DAY_ORDER_STILL_ACTIVE")
+        self.assertEqual(self.transport.count("PostOrder"), 0)
 
     def test_broker_report_recovery_accepts_legacy_fak_alias(self):
         result = self.adapter.recover_submission_from_broker_report(
