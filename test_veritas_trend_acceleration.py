@@ -401,22 +401,22 @@ class TrendAccelerationTests(unittest.TestCase):
         )
         self.assertTrue(result["active"])
         self.assertEqual(result["stage"], "FAST_CONFIRMED")
-        self.assertAlmostEqual(result["target_fraction"], 1.00)
+        self.assertAlmostEqual(result["target_fraction"], 0.50)
 
-    def test_mid_confirmation_earns_half_nav_standard_target(self):
+    def test_mid_confirmation_earns_75pct_standard_target(self):
         row = trend_row(state="BUILDING_TREND", tier="LONG", mid=True)
         result = VSL._trend_acceleration_state(row, "LONG", {"mode": "CORE"})
         self.assertTrue(result["active"])
         self.assertEqual(result["stage"], "MID_CONFIRMED")
-        self.assertAlmostEqual(result["target_fraction"], 0.50)
+        self.assertAlmostEqual(result["target_fraction"], 0.75)
 
-    def test_senior_confirmation_earns_75pct_standard_target(self):
+    def test_senior_confirmation_earns_full_standard_target(self):
         row = trend_row(supporting=["1h"])
         result = VSL._trend_acceleration_state(row, "LONG", {"mode": "CORE"})
         self.assertEqual(result["stage"], "SENIOR_CONFIRMED")
-        self.assertAlmostEqual(result["target_fraction"], 0.75)
+        self.assertAlmostEqual(result["target_fraction"], 1.00)
 
-    def test_aggressive_senior_target_is_250pct(self):
+    def test_aggressive_senior_target_is_500pct(self):
         row = trend_row(supporting=["1h", "4h"])
         result = VSL._trend_acceleration_state(
             row, "LONG", {"mode": "AGGRESSIVE"}
@@ -432,7 +432,7 @@ class TrendAccelerationTests(unittest.TestCase):
         self.assertAlmostEqual(result["target_fraction"],1.00)
         self.assertTrue(result["trend_day_efficiency"]["eligible"])
 
-    def test_extreme_trend_day_earns_350pct_aggressive_allocation(self):
+    def test_extreme_trend_day_earns_500pct_aggressive_allocation(self):
         row=extreme_trend_row()
         result=VSL._trend_acceleration_state(row,"LONG",{"mode":"AGGRESSIVE"})
         self.assertEqual(result["stage"],"EXTREME_CONFIRMED")
